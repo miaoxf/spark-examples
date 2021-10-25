@@ -493,7 +493,7 @@ object EcAndFileCombine {
 
     if (params(0).equalsIgnoreCase("true")) {
       // 开启线上测试模式
-      onlineTestMode = args(0).toBoolean
+      onlineTestMode = params(0).toBoolean
       params.zipWithIndex.foreach(v => {
         if (v._2 != 0) {
           args += v._1
@@ -502,12 +502,12 @@ object EcAndFileCombine {
       InnerLogger.info("initParams", "start with test mode!")
     } else {
       params.foreach(args += _)
+      assert(args != null && args.size >4, "num of params less than 5!")
+      assert(args(4).toInt == 0 || args(4).toInt == 1, "jobType must be 0 or 1," +
+        " 0 represent ec and 1 represent file_combine!")
+      if (args.size > 8) assert(args(8).equalsIgnoreCase("asc")
+        || args(8).equalsIgnoreCase("desc"), "handleFileSizeOrder must be asc or desc!")
     }
-    assert(args != null && args.size >4, "num of params less than 5!")
-    assert(args(4).toInt == 0 || args(4).toInt == 1, "jobType must be 0 or 1," +
-      " 0 represent ec and 1 represent file_combine!")
-    if (args.size > 8) assert(args(8).equalsIgnoreCase("asc")
-      || args(8).equalsIgnoreCase("desc"), "handleFileSizeOrder must be asc or desc!")
 
     actionId = args(0)
     actionSid = args(1)
