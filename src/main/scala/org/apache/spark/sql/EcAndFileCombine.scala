@@ -792,7 +792,7 @@ class EcAndFileCombine {
         val updateLocationAndClusterSql =
           s"""
              |update ${targetMysqlTable}
-             |set location = '${destDtLocation}',cluster_old = '${initCluster}',file_count = ${fileCount},file_count_old = ${fileCountOld}
+             |set path_cluster = '${successSchema.get(CLUSTER)}',location = '${destDtLocation}',cluster_old = '${initCluster}',file_count = ${fileCount},file_count_old = ${fileCountOld}
              |where id = ${successSchema.get(MYSQL_ID)}
              |""".stripMargin
         if (MysqlSingleConn.updateQuery(updateLocationAndClusterSql) <= 0){
