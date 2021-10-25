@@ -7,8 +7,11 @@ package org.apache.spark.sql
 // :require /home/vipshop/platform/spark-3.0.1/jars/spark-core_2.12-3.0.1-SNAPSHOT.jar
 // :require /home/vipshop/platform/spark-3.0.1/jars/spark-sql_2.12-3.0.1-SNAPSHOT.jar
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.SparkException
-import org.apache.spark.sql.EcAndFileCombine.{batchSize, jobType, onlineTestMode, runCmd, targetMysqlTable}
+import org.apache.spark.sql.EcAndFileCombine.{batchSize, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
+import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
 import org.apache.spark.sql.JobType.{JobType, MID_DT_LOCATION, Record}
 import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SUCCESS_CODE, defaultMySQLConfig}
 import org.apache.spark.sql.catalyst.QueryPlanningTracker
@@ -293,6 +296,7 @@ object MysqlSingleConn {
 object EcAndFileCombine {
   val ecPolicy: String = "RS-6-3-1024k"
   val sparkHomePath = "/home/vipshop/platform/spark-3.0.1"
+  val hadoopConfDir = "HADOOP_CONF_DIR"
   val sparkDynamicAllocationMaxExecutors = 400
   val sparkMemoryFraction = 0.6
   val defaultAcquireCores = 4
@@ -318,6 +322,7 @@ object EcAndFileCombine {
   var enableFileSizeOrder: Boolean = true
   var onlyHandleOneLevelPartition: Boolean = true
   var enableFineGrainedInsertion: Boolean = false
+  var enableOrcDumpWithSpark: Boolean = false
   var handleFileSizeOrder: String = "asc"
   // 标识是否开启分流,such as: vipdw.tableA,vipdw.tableB
   var enableGobalSplitFlow = false
@@ -526,8 +531,9 @@ object EcAndFileCombine {
     filesTotalThreshold = if (args.size > 14) args(14).toLong else 20000
     onlyHandleOneLevelPartition = if (args.size > 15) args(15).toBoolean else true
     enableFineGrainedInsertion = if (args.size > 16) args(16).toBoolean else false
-    fileCombineThreshold = if (args.size > 17) args(17).toLong else 104857600
-    submitSparkShell = if (args.size > 18) args(18).toBoolean else true
+    enableOrcDumpWithSpark = if (args.size > 17) args(17).toBoolean else false
+    fileCombineThreshold = if (args.size > 18) args(18).toLong else 104857600
+    submitSparkShell = if (args.size > 19) args(19).toBoolean else true
   }
 
   def main(args: Array[String]): Unit = {
@@ -716,8 +722,19 @@ class EcAndFileCombine {
             && ORC_OUTPUT_FORMAT.equalsIgnoreCase(outputFormat)) {
             // execute orc file dump
             InnerLogger.debug(InnerLogger.CHECK_MOD, s"this is an ec job,start to dump orc file[${successSchema.get(MID_DT_LOCATION)}]...")
-            val dumpCmd = s"hive --orcfiledump ${successSchema.get(MID_DT_LOCATION)}"
-            runCmd(dumpCmd, successSchema.get(MYSQL_ID), InnerLogger.CHECK_MOD, ORC_DUMP_FAILED)
+
+            val toDumpPath = successSchema.get(MID_DT_LOCATION)
+            if (enableOrcDumpWithSpark) {
+              val bool = dumpOrcFileWithSpark(spark, toDumpPath)
+              if (!bool) {
+                MysqlSingleConn.updateStatus(jobType.mysqlStatus, ORC_DUMP_FAILED, successSchema.get(MYSQL_ID).toInt)
+                InnerLogger.error(InnerLogger.CHECK_MOD, s"dump orc file[${toDumpPath}] failed!")
+                throw new RuntimeException(s"dump orc file failed!")
+              }
+            } else {
+              val dumpCmd = s"hive --orcfiledump ${toDumpPath}"
+              runCmd(dumpCmd, successSchema.get(MYSQL_ID), InnerLogger.CHECK_MOD, ORC_DUMP_FAILED)
+            }
             InnerLogger.info(InnerLogger.CHECK_MOD, s"dump orc file[${successSchema.get(MID_DT_LOCATION)}] successfully!")
           }
         case JobType.fileCombine =>
@@ -1272,16 +1289,20 @@ class EcAndFileCombine {
         else false
       })
       val staticLocations: Array[String] = allStaticPartitionsRows.map(_.get(0).toString)
-      val locationToStaticPartitionSql: Array[Tuple3[String, String, String]] = staticLocations.map(location => {
+      val locationToStaticPartitionSql: Array[Tuple4[String, String, String, ArrayBuffer[String]]] = staticLocations.map(location => {
         val partitions = location.split("/")
         val buffer = new ArrayBuffer[String]()
+        val partitionColumns = new ArrayBuffer[String]()
         for (i <- Range(0, partitions.size)) {
           val part = partitions(i)
           val kv = part.split("=")
           assert(kv.size == 2)
           buffer += kv(0) + "=" + "'" + kv(1) + "'"
+          partitionColumns += kv(0)
         }
-        Tuple3(location, buffer.mkString(" and "), buffer.mkString(","))
+
+        Tuple4(location, buffer.mkString(" and "), buffer.mkString(","),
+          partitionColumns)
       })
 
 
@@ -1318,18 +1339,26 @@ class EcAndFileCombine {
             val createDataSourceSql = "select * from " + srcTbl + " where " + location2Sql._2
             tempViewName = (tempViewName + "0" + location2Sql._1)
               .replace("/", "0").replace("=", "0")
-            val df = spark.sql(createDataSourceSql)
+            // drop constant partition value
+            val df = spark.sql(createDataSourceSql).drop(location2Sql._4:_*)
             df.createOrReplaceTempView(tempViewName)
             // 设置maxSplitBytes
             // spark.conf.set("spark.sql.files.maxPartitionBytes", maxPartitionBytes)
-            val fineGrainedLocation = sourceTblLocation.stripSuffix("/") + location2Sql._1
+            val fineGrainedLocation = sourceTblLocation.stripSuffix("/") + "/" + location2Sql._1
             val totalSize = s"hdfs dfs -count ${fineGrainedLocation}".!!
               .split(" ").filter(!_.equals(""))(2).stripMargin
             val parallelism: Long = totalSize.toLong / maxPartitionBytes.toLong
-            insertSql = s"insert overwrite table " + dbName + "." + midTblName +
-              s" partition (${location2Sql._3}) " +
-              s"select /*+ repartition(${parallelism}) */ * from " + tempViewName
-            spark.sql(insertSql)
+            InnerLogger.debug(InnerLogger.SPARK_MOD, "get size of fineGrainedLocation: " +
+              s"${fineGrainedLocation},totalSize:${totalSize},maxPartitionBytes:${maxPartitionBytes}," +
+              s"parallelism:${parallelism}")
+            if (parallelism > 0) {
+              insertSql = s"insert overwrite table " + dbName + "." + midTblName +
+                s" partition (${location2Sql._3}) " +
+                s"select /*+ repartition(${parallelism}) */ * from " + tempViewName
+              InnerLogger.debug(InnerLogger.SPARK_MOD, "start to execute insertion with static" +
+                s"partition: ${insertSql}")
+              spark.sql(insertSql)
+            }
           })
 
           spark.conf.set("spark.sql.sources.partitionOverwriteMode", PartitionOverwriteMode.STATIC.toString)
@@ -1593,6 +1622,51 @@ class EcAndFileCombine {
     System.exit(0)
   }
 
+}
+
+object InnerUtils {
+  /** 分布式dump orc file */
+  def dumpOrcFileWithSpark(spark: SparkSession, parentPath: String, parallelism: Int = 500): Boolean = {
+    val path = new Path(parentPath)
+    val fileInPath = new ArrayBuffer[Path]()
+    getAllFilesInPath(path, getHadoopConf(), fileInPath)
+    val allFiles = fileInPath.map(_.getName)
+    val rdd = spark.sparkContext.makeRDD(allFiles, parallelism)
+    val dumpRetRdd = rdd.mapPartitions(iter => {
+      var dumpRet = true
+      iter.foreach(path => {
+        // todo dump orc file
+        if (s"hive --orcfiledump ${path}".! != 0) dumpRet = false
+      })
+      Seq(dumpRet).toIterator
+    })
+    val booleans: Array[Boolean] = dumpRetRdd.collect()
+    !booleans.contains(false)
+  }
+
+  def getAllFilesInPath(parentPath: Path, configuration: Configuration, buffer: ArrayBuffer[Path]): Unit = {
+    val fileSystem = parentPath.getFileSystem(configuration)
+    val fileStatus = fileSystem.getFileStatus(parentPath)
+    if (fileStatus.isDirectory) {
+      val fileStatuses = fileSystem.listStatus(parentPath)
+      fileStatuses.foreach(fileStatus => {
+        if (fileStatus.isDirectory) {
+          getAllFilesInPath(fileStatus.getPath, configuration, buffer)
+        } else if (fileStatus.isFile) {
+          buffer += fileStatus.getPath
+        }
+      })
+    } else if (fileStatus.isFile) {
+      buffer += fileStatus.getPath
+    }
+  }
+
+  def getHadoopConf(): Configuration = {
+    val dir = System.getenv(hadoopConfDir)
+    val conf = new Configuration()
+    //    conf.addResource(new File(dir))
+    conf
+  }
 }
 
 
