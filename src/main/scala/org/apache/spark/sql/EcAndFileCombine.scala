@@ -7,12 +7,22 @@ package org.apache.spark.sql
 // :require /home/vipshop/platform/spark-3.0.1/jars/spark-core_2.12-3.0.1-SNAPSHOT.jar
 // :require /home/vipshop/platform/spark-3.0.1/jars/spark-sql_2.12-3.0.1-SNAPSHOT.jar
 
-import org.apache.spark.sql.EcAndFileCombine.{jobType, onlineTestMode, runCmd, targetMysqlTable}
+import org.apache.spark.SparkException
+import org.apache.spark.sql.EcAndFileCombine.{batchSize, jobType, onlineTestMode, runCmd, targetMysqlTable}
 import org.apache.spark.sql.JobType.{JobType, MID_DT_LOCATION, Record}
-import org.apache.spark.sql.MysqlSingleConn._
+import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SUCCESS_CODE, defaultMySQLConfig}
+import org.apache.spark.sql.catalyst.QueryPlanningTracker
+import org.apache.spark.sql.catalyst.analysis.{UnresolvedAlias, UnresolvedAttribute}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, SortOrder}
+import org.apache.spark.sql.internal.SQLConf.PartitionOverwriteMode
+import org.codehaus.jackson.map.ObjectMapper
 
 import java.io.File
+import java.lang.reflect.Method
+import java.net.{URL, URLClassLoader}
 import java.sql.{Connection, DriverManager, ResultSet}
+import java.util
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 import java.util.stream.Collectors
 import java.util.{Locale, UUID, stream}
@@ -20,6 +30,8 @@ import scala.collection.immutable.Range
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.sys.process._
+import scala.util.parsing.json.JSON.parseRaw
+import scala.util.parsing.json.{JSONArray, JSONObject}
 
 object JobType extends Enumeration {
   val MYSQL_ID = "id"
@@ -317,10 +329,10 @@ object EcAndFileCombine {
   var submitSparkShell: Boolean = _
   var testMode: Boolean = false
 
-//  ExtClasspathLoader.loadClasspath(new File(
-//    "/home/vipshop/platform/spark-3.0.1/jars/spark-sql_2.12-3.0.1-SNAPSHOT.jar"))
-//  // todo ???没法导包？？
-//  Class.forName("org.apache.spark.sql.SparkSession").newInstance()
+  //  ExtClasspathLoader.loadClasspath(new File(
+  //    "/home/vipshop/platform/spark-3.0.1/jars/spark-sql_2.12-3.0.1-SNAPSHOT.jar"))
+  //  // todo ???没法导包？？
+  //  Class.forName("org.apache.spark.sql.SparkSession").newInstance()
 
   def getTable(): String = {
     targetTableToEcOrCombine.split("&").map("'" + _ + "'").mkString(",")
@@ -479,11 +491,6 @@ object EcAndFileCombine {
     // 0
     // 10
 
-    assert(args != null && args.size >4, "num of params less than 5!")
-    assert(args(4).toInt == 0 || args(4).toInt == 1, "jobType must be 0 or 1," +
-      " 0 represent ec and 1 represent file_combine!")
-    if (args.size > 8) assert(args(8).equalsIgnoreCase("asc")
-      || args(8).equalsIgnoreCase("desc"), "handleFileSizeOrder must be asc or desc!")
     if (args(0).equalsIgnoreCase("true")) {
       // 开启线上测试模式
       onlineTestMode = args(0).toBoolean
@@ -496,6 +503,12 @@ object EcAndFileCombine {
     } else {
       params.foreach(args += _)
     }
+    assert(args != null && args.size >4, "num of params less than 5!")
+    assert(args(4).toInt == 0 || args(4).toInt == 1, "jobType must be 0 or 1," +
+      " 0 represent ec and 1 represent file_combine!")
+    if (args.size > 8) assert(args(8).equalsIgnoreCase("asc")
+      || args(8).equalsIgnoreCase("desc"), "handleFileSizeOrder must be asc or desc!")
+
     actionId = args(0)
     actionSid = args(1)
     targetMysqlTable = args(2)
@@ -684,7 +697,7 @@ class EcAndFileCombine {
         // success file 不存在，删除midLocation
         deleteFileIfExist(record.get(MID_DT_LOCATION))
         InnerLogger.info(InnerLogger.CHECK_MOD,
-            s"success file 不存在,midDTLocation[${record.get(MID_DT_LOCATION)}] 成功地被删除或者本就不存在!")
+          s"success file 不存在,midDTLocation[${record.get(MID_DT_LOCATION)}] 成功地被删除或者本就不存在!")
         MysqlSingleConn.updateStatus(jobType.mysqlStatus, 3, record.get(MYSQL_ID).toInt)
         // todo 类似的return需要加上
         return
@@ -714,7 +727,7 @@ class EcAndFileCombine {
       // change dir of source and mid
       // 删除success file
       InnerLogger.debug(InnerLogger.CHECK_MOD, s"delete success file[${successSchema.get(SUCCESS_FILE_LOCATION)}]...")
-       s"hdfs dfs -rm ${successSchema.get(SUCCESS_FILE_LOCATION)}".!
+      s"hdfs dfs -rm ${successSchema.get(SUCCESS_FILE_LOCATION)}".!
       InnerLogger.debug(InnerLogger.CHECK_MOD, "start to change dir of source and mid...")
       val toBeDelLocation = successSchema.get(TO_BE_DEL_LOCATION)
       val moveSourceCmd = s"hdfs dfs -mv ${successSchema.get(LOCATION)}" +
@@ -840,12 +853,12 @@ class EcAndFileCombine {
     // enableGobalSplitFlow && targetTableToEcOrCombine.equals("")条件：
     // 对应开启分流的同时，没有指定需要分流的表，那么，根据split_flow_status = 1来寻找分流的表
     val getDatasourceSql =
-      s"""
-         |select id,db_name,tbl_name,location,first_partition,${jobType.mysqlStatus},path_cluster,dt,file_size
-         |    from ${targetMysqlTable} where ${if (!onlineTestMode) jobType.mysqlStatus + " = 1 and " else " "} id in (${ids})
-         |    ${if (!targetTableToEcOrCombine.equals("")) " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
-         |    ${if (enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) " and split_flow_status = 1" else " and split_flow_status <> -1"};
-         |""".stripMargin
+    s"""
+       |select id,db_name,tbl_name,location,first_partition,${jobType.mysqlStatus},path_cluster,dt,file_size
+       |    from ${targetMysqlTable} where ${if (!onlineTestMode) jobType.mysqlStatus + " = 1 and " else " "} id in (${ids})
+       |    ${if (!targetTableToEcOrCombine.equals("")) " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
+       |    ${if (enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) " and split_flow_status = 1" else " and split_flow_status <> -1"};
+       |""".stripMargin
     InnerLogger.debug(InnerLogger.ENCAP_MOD, s"sql to get datasource: ${getDatasourceSql}")
     val rs = MysqlSingleConn.executeQuery(getDatasourceSql)
     while (rs.next()) {
@@ -985,6 +998,8 @@ class EcAndFileCombine {
     // submit spark with shell
     InnerLogger.debug(InnerLogger.SCHE_MOD, "start to submit spark app ...")
     InnerLogger.info(InnerLogger.SCHE_MOD, "submit spark app with spark-jar")
+
+    import org.apache.spark.SparkConf
     val conf = new SparkConf()
 
     if (test) {
@@ -1362,7 +1377,7 @@ class EcAndFileCombine {
       } catch {
         case ex: Exception =>
           if (!repartitionByBucketOrPartition) InnerLogger.error(InnerLogger.SPARK_MOD, s"execute " +
-              s"spark.sql(${insertSql}) failed!")
+            s"spark.sql(${insertSql}) failed!")
           throw ex
       } finally {
         repartitionByBucketOrPartition = false
