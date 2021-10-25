@@ -491,7 +491,7 @@ object EcAndFileCombine {
     // 0
     // 10
 
-    if (args(0).equalsIgnoreCase("true")) {
+    if (params(0).equalsIgnoreCase("true")) {
       // 开启线上测试模式
       onlineTestMode = args(0).toBoolean
       params.zipWithIndex.foreach(v => {
