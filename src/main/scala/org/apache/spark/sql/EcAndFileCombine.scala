@@ -1308,30 +1308,6 @@ class EcAndFileCombine {
         else spark.conf.unset(key)
       }
 
-      // 所有分区都是静态分区的场景下，针对最细粒度的分区进行合并
-      val allStaticPartitionsRows: Array[Row] = showPartitionsRows.filter(row => {
-        val partitionStr = row.get(0)
-        if (partitionStr != null && partitionStr.toString.contains(firstPartition)) true
-        else false
-      })
-      val staticLocations: Array[String] = allStaticPartitionsRows.map(_.get(0).toString)
-      val locationToStaticPartitionSql: Array[Tuple4[String, String, String, ArrayBuffer[String]]] = staticLocations.map(location => {
-        val partitions = location.split("/")
-        val buffer = new ArrayBuffer[String]()
-        val partitionColumns = new ArrayBuffer[String]()
-        for (i <- Range(0, partitions.size)) {
-          val part = partitions(i)
-          val kv = part.split("=")
-          assert(kv.size == 2)
-          buffer += kv(0) + "=" + "'" + kv(1) + "'"
-          partitionColumns += kv(0)
-        }
-
-        Tuple4(location, buffer.mkString(" and "), buffer.mkString(","),
-          partitionColumns)
-      })
-
-
       Try(numOfPartitionLevel.toInt) match {
         case Success(value) =>
           if (value < 2) allStaticPartition = false
@@ -1360,6 +1336,29 @@ class EcAndFileCombine {
           // 动态分区仍然开启，通过动态分区的方式insert，但是overwrite模式改成动态的!
           // todo 考虑并发执行
           // todo 这个参数会影响同时并发跑的其他job！
+
+          // 所有分区都是静态分区的场景下，针对最细粒度的分区进行合并
+          val allStaticPartitionsRows: Array[Row] = showPartitionsRows.filter(row => {
+            val partitionStr = row.get(0)
+            if (partitionStr != null && partitionStr.toString.contains(firstPartition)) true
+            else false
+          })
+          val staticLocations: Array[String] = allStaticPartitionsRows.map(_.get(0).toString)
+          val locationToStaticPartitionSql: Array[Tuple4[String, String, String, ArrayBuffer[String]]] = staticLocations.map(location => {
+            val partitions = location.split("/")
+            val buffer = new ArrayBuffer[String]()
+            val partitionColumns = new ArrayBuffer[String]()
+            for (i <- Range(0, partitions.size)) {
+              val part = partitions(i)
+              val kv = part.split("=")
+              assert(kv.size == 2)
+              buffer += kv(0) + "=" + "'" + kv(1) + "'"
+              partitionColumns += kv(0)
+            }
+
+            Tuple4(location, buffer.mkString(" and "), buffer.mkString(","),
+              partitionColumns)
+          })
           spark.conf.set("spark.sql.sources.partitionOverwriteMode", PartitionOverwriteMode.DYNAMIC.toString)
           locationToStaticPartitionSql.foreach(location2Sql =>{
             val createDataSourceSql = "select * from " + srcTbl + " where " + location2Sql._2
