@@ -317,7 +317,7 @@ object EcAndFileCombine {
   val sparkShellFile = "/tmp/sparkShellForEcAndCombine.sh"
   val JAR_SUFFIX: String = ".jar"
   val ZIP_SUFFIX: String = ".zip"
-  val SPLIT_DELIMITER: String = "____ec__delimiter____"
+  val SPLIT_DELIMITER: String = ";"
   var onlineTestMode: Boolean = false
   var actionId: String = _
   var actionSid: String = _
@@ -781,6 +781,7 @@ class EcAndFileCombine {
         s"${successSchema.get(FIRST_PARTITION)}'"
 
       val fineGrainedPartitionSql = successSchema.get(PARTITION_SQL)
+      InnerLogger.debug(InnerLogger.CHECK_MOD, s"fineGrainedPartitionSql:${fineGrainedPartitionSql}")
 
       // 以下操作具有原子性:①moveSourceCmd之后的命令抛异常 ②moveSourceCmd成功之后jvm随即退出
       idToRollBackCmd.put(mysqlId, rollbackCmd)
@@ -1360,9 +1361,9 @@ class EcAndFileCombine {
             else false
           })
           val staticLocations: Array[String] = allStaticPartitionsRows.map(_.get(0).toString)
-          var fineGrainedPartitionSql = "alter table " + dbName + "." + midTblName + " partition(${par}) " +
-            s"set location '${destTblLocation.stripSuffix("/")}"
           val locationToStaticPartitionSql: Array[Tuple5[String, String, String, ArrayBuffer[String], String]] = staticLocations.map(location => {
+            var fineGrainedPartitionSql = "alter table " + dbName + "." + midTblName + " partition(${par}) " +
+              s"set location '${destTblLocation.stripSuffix("/")}"
             val partitions = location.split("/")
             val buffer = new ArrayBuffer[String]()
             val partitionColumns = new ArrayBuffer[String]()
@@ -1375,7 +1376,7 @@ class EcAndFileCombine {
               fineGrainedPartitionSql = fineGrainedPartitionSql + s"/${kv(0)}=${kv(1)}"
             }
             fineGrainedPartitionSql = fineGrainedPartitionSql.replace("${par}", buffer.mkString(","))
-            fineGrainedPartitionSql = fieldOfStaticPartition + "'"
+            fineGrainedPartitionSql = fineGrainedPartitionSql + "'"
 
             Tuple5(location, buffer.mkString(" and "), buffer.mkString(","),
               partitionColumns, fineGrainedPartitionSql)
@@ -1411,6 +1412,8 @@ class EcAndFileCombine {
           })
 
           resultMap.put(PARTITION_SQL, fineGrainedPartitionSqls.mkString(SPLIT_DELIMITER))
+          InnerLogger.debug(InnerLogger.SPARK_MOD, s"fineGrainedPartitionSqls:" +
+            s"${fineGrainedPartitionSqls.mkString(SPLIT_DELIMITER)}")
           spark.conf.set("spark.sql.sources.partitionOverwriteMode", PartitionOverwriteMode.STATIC.toString)
 
         } else if (!repartitionByBucketOrPartition) {
