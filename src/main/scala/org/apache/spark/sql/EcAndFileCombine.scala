@@ -9,9 +9,12 @@ package org.apache.spark.sql
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.hdfs.DistributedFileSystem
+import org.apache.orc.{OrcFile, Reader}
+import org.apache.orc.impl.OrcAcidUtils
 import org.apache.orc.tools.FileDump
 import org.apache.spark.SparkException
-import org.apache.spark.sql.EcAndFileCombine.{batchSize, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
+import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
 import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
 import org.apache.spark.sql.JobType.{JobType, MID_DT_LOCATION, Record}
 import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SUCCESS_CODE, defaultMySQLConfig}
@@ -19,9 +22,10 @@ import org.apache.spark.sql.catalyst.QueryPlanningTracker
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAlias, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{Ascending, SortOrder}
 import org.apache.spark.sql.internal.SQLConf.PartitionOverwriteMode
+import org.apache.spark.util.SerializableConfiguration
 import org.codehaus.jackson.map.ObjectMapper
 
-import java.io.File
+import java.io.{BufferedInputStream, File, FileInputStream}
 import java.lang.reflect.Method
 import java.net.{URL, URLClassLoader}
 import java.sql.{Connection, DriverManager, ResultSet}
@@ -298,6 +302,7 @@ object EcAndFileCombine {
   val ecPolicy: String = "RS-6-3-1024k"
   val sparkHomePath = "/home/vipshop/platform/spark-3.0.1"
   val hadoopConfDir = "HADOOP_CONF_DIR"
+  val defaultHadoopConfDir = "/home/vipshop/conf"
   val sparkDynamicAllocationMaxExecutors = 400
   val sparkMemoryFraction = 0.6
   val defaultAcquireCores = 4
@@ -719,7 +724,7 @@ class EcAndFileCombine {
           InnerLogger.debug(InnerLogger.CHECK_MOD, "this is an ec job...")
           val inputFormat = successSchema.get(INPUT_FORMAT)
           val outputFormat = successSchema.get(OUTPUT_FORMAT)
-          if (ORC_INPUT_FORMAT.equalsIgnoreCase(inputFormat)
+          if (!enableGobalSplitFlow && ORC_INPUT_FORMAT.equalsIgnoreCase(inputFormat)
             && ORC_OUTPUT_FORMAT.equalsIgnoreCase(outputFormat)) {
             // execute orc file dump
             InnerLogger.debug(InnerLogger.CHECK_MOD, s"this is an ec job,start to dump orc file[${successSchema.get(MID_DT_LOCATION)}]...")
@@ -1645,26 +1650,100 @@ class EcAndFileCombine {
 
 }
 
+// /home/vipshop/platform/spark-3.0.1/jars/hadoop-common-3.2.0-vipshop-2.0.jar
+// /home/vipshop/platform/spark-3.0.1/jars/hadoop-client-3.2.0-vipshop-2.0.jar
+// /home/vipshop/platform/spark-3.0.1/jars/woodstox-core-5.0.3.jar
 object InnerUtils {
+  var configuration: Configuration = getHadoopConf
+
   /** 分布式dump orc file */
-  def dumpOrcFileWithSpark(spark: SparkSession, parentPath: String, parallelism: Int = 500): Boolean = {
+  def dumpOrcFileWithSpark(spark: SparkSession, parentPath: String,
+                           parallelism: Int = 500, dumpWithCommand: Boolean = true): Boolean = {
     val path = new Path(parentPath)
     val fileInPath = new ArrayBuffer[Path]()
-    getAllFilesInPath(path, getHadoopConf(), fileInPath)
+    getAllFilesInPath(path, configuration, fileInPath)
+    println("fileInPath" + fileInPath.mkString(","))
     val allFiles = fileInPath.map(_.getName)
     val rdd = spark.sparkContext.makeRDD(allFiles, parallelism)
+    val broadcastedHadoopConf =
+      spark.sparkContext.broadcast(new SerializableConfiguration(configuration))
     val dumpRetRdd = rdd.mapPartitions(iter => {
-      var dumpRet = true
-      iter.foreach(path => {
+      val corruptFiles = new java.util.ArrayList[String]()
+      // 接受广播变量configuration
+      val conf = broadcastedHadoopConf.value.value
+      iter.foreach(pathStr => {
         // todo dump orc file
         // if (s"hive --orcfiledump ${path}".! != 0) dumpRet = false
-        try {
-          FileDump.main(getHadoopConf(), Array{path})
-        } catch {
-          case e: Exception => dumpRet = false
+
+        val path = new Path(pathStr)
+        val fs = path.getFileSystem(conf)
+        val dataFileLen = fs.getFileStatus(path).getLen()
+        val sideFile = OrcAcidUtils.getSideFile(path)
+        val sideFileExists = fs.exists(sideFile)
+        var openDataFile = false
+        var openSideFile = false
+        var reader: DistributedFileSystem = null
+
+        if (fs.isInstanceOf[DistributedFileSystem]) {
+          reader = fs.asInstanceOf[DistributedFileSystem]
+          openDataFile = !reader.isFileClosed(path)
+          openSideFile = sideFileExists && !reader.isFileClosed(sideFile)
         }
+
+        if (!openDataFile && !openSideFile) {
+          // reader = null
+          var reader: Reader = null
+          if (sideFileExists) {
+            val maxLen = OrcAcidUtils.getLastFlushLength(fs, path)
+            val sideFileLen = fs.getFileStatus(sideFile).getLen()
+            // System.err.println("Found flush length file " + sideFile + " [length: " + sideFileLen + ", maxFooterOffset: " + maxLen + "]");
+            if (maxLen == -1L) {
+              if (dataFileLen > maxLen) {
+                // System.err.println("Data file has more data than max footer offset:" + maxLen + ". Adding data file to recovery list.");
+                if (corruptFiles != null) {
+                  corruptFiles.add(path.toUri().toString())
+                }
+              }
+
+              // return null
+            }
+
+            try {
+              reader = OrcFile.createReader(path, OrcFile.readerOptions(conf).maxLength(maxLen))
+              if (dataFileLen > maxLen) {
+                // System.err.println("Data file has more data than max footer offset:" + maxLen + ". Adding data file to recovery list.");
+                if (corruptFiles != null) {
+                  corruptFiles.add(path.toUri().toString())
+                }
+              }
+            } catch {
+              case e: Exception =>
+                if (corruptFiles != null) {
+                  corruptFiles.add(path.toUri().toString())
+                }
+                // System.err.println("Unable to read data from max footer offset. Adding data file to recovery list.");
+                // return null
+            }
+          } else {
+            reader = OrcFile.createReader(path, OrcFile.readerOptions(conf))
+          }
+
+          // return reader
+
+        } else {
+          if (openDataFile && openSideFile) {
+            System.err.println("Unable to perform file dump as " + path + " and " + sideFile + " are still open for writes.");
+          } else if (openSideFile) {
+            System.err.println("Unable to perform file dump as " + sideFile + " is still open for writes.");
+          } else {
+            System.err.println("Unable to perform file dump as " + path + " is still open for writes.");
+          }
+          // return null
+        }
+
+
       })
-      Seq(dumpRet).toIterator
+      Seq(corruptFiles.size() == 0).toIterator
     })
     val booleans: Array[Boolean] = dumpRetRdd.collect()
     !booleans.contains(false)
@@ -1688,9 +1767,29 @@ object InnerUtils {
   }
 
   def getHadoopConf(): Configuration = {
-    val dir = System.getenv(hadoopConfDir)
+    var dir = System.getenv(hadoopConfDir)
+    if (dir == null) {
+      dir = defaultHadoopConfDir
+      InnerLogger.debug("InnerUtils", s"use default hadoop conf dir:${defaultHadoopConfDir}")
+    } else {
+      InnerLogger.debug("InnerUtils", s"use hadoop conf dir from sys env:${dir}")
+    }
+    dir = dir.stripSuffix("/") + "/"
     val conf = new Configuration()
-    //    conf.addResource(new File(dir))
+    conf.addResource(new Path(dir + "hdfs-site.xml"))
+    conf
+  }
+
+  /** for test */
+  def getHadoopConfInShell(): Configuration = {
+    import org.apache.hadoop.conf.Configuration
+    import org.apache.hadoop.fs.{FileSystem, Path}
+    import java.io.{BufferedInputStream, File, FileInputStream}
+    val dir = "/home/vipshop/conf/"
+    val conf = new Configuration()
+    val inputStream = new BufferedInputStream(new FileInputStream(new File(dir + "hdfs-site.xml")))
+//    conf.addResource(inputStream)
+    conf.addResource(dir + "hdfs-site.xml")
     conf
   }
 }
