@@ -317,7 +317,7 @@ object EcAndFileCombine {
   val sparkShellFile = "/tmp/sparkShellForEcAndCombine.sh"
   val JAR_SUFFIX: String = ".jar"
   val ZIP_SUFFIX: String = ".zip"
-  val SPLIT_DELIMITER: String = "$$__$$"
+  val SPLIT_DELIMITER: String = "____ec__delimiter____"
   var onlineTestMode: Boolean = false
   var actionId: String = _
   var actionSid: String = _
@@ -775,9 +775,8 @@ class EcAndFileCombine {
       val mysqlId = successSchema.get(MYSQL_ID)
       val firstPartitionArr = successSchema.get(FIRST_PARTITION).split("=")
       assert(firstPartitionArr.size == 2)
-      val partitionSql = successSchema.get(PARTITION_SQL)
-      successSchema.get()
-      var alterDtLocationSql = s"alter table ${successSchema.get(DB_NAME) + "." + successSchema.get(TBL_NAME)}" +
+      val partitionSql = firstPartitionArr(0) + "='" + firstPartitionArr(1) + "'"
+      val alterDtLocationSql = s"alter table ${successSchema.get(DB_NAME) + "." + successSchema.get(TBL_NAME)}" +
         s" partition(${partitionSql}) set location '${successSchema.get(DEST_TBL_LOCATION).stripSuffix("/")}/" +
         s"${successSchema.get(FIRST_PARTITION)}'"
 
@@ -1362,7 +1361,7 @@ class EcAndFileCombine {
           })
           val staticLocations: Array[String] = allStaticPartitionsRows.map(_.get(0).toString)
           var fineGrainedPartitionSql = "alter table " + dbName + "." + midTblName + " partition(${par}) " +
-            s"set location '${destTblLocation.stripSuffix("/")}'"
+            s"set location '${destTblLocation.stripSuffix("/")}"
           val locationToStaticPartitionSql: Array[Tuple5[String, String, String, ArrayBuffer[String], String]] = staticLocations.map(location => {
             val partitions = location.split("/")
             val buffer = new ArrayBuffer[String]()
@@ -1375,7 +1374,8 @@ class EcAndFileCombine {
               partitionColumns += kv(0)
               fineGrainedPartitionSql = fineGrainedPartitionSql + s"/${kv(0)}=${kv(1)}"
             }
-            fineGrainedPartitionSql.replace("${par}", buffer.mkString(","))
+            fineGrainedPartitionSql = fineGrainedPartitionSql.replace("${par}", buffer.mkString(","))
+            fineGrainedPartitionSql = fieldOfStaticPartition + "'"
 
             Tuple5(location, buffer.mkString(" and "), buffer.mkString(","),
               partitionColumns, fineGrainedPartitionSql)
