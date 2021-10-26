@@ -9,6 +9,7 @@ package org.apache.spark.sql
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.orc.tools.FileDump
 import org.apache.spark.SparkException
 import org.apache.spark.sql.EcAndFileCombine.{batchSize, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
 import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
@@ -1636,7 +1637,12 @@ object InnerUtils {
       var dumpRet = true
       iter.foreach(path => {
         // todo dump orc file
-        if (s"hive --orcfiledump ${path}".! != 0) dumpRet = false
+        // if (s"hive --orcfiledump ${path}".! != 0) dumpRet = false
+        try {
+          FileDump.main(getHadoopConf(), Array{path})
+        } catch {
+          case e: Exception => dumpRet = false
+        }
       })
       Seq(dumpRet).toIterator
     })
