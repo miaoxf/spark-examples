@@ -74,6 +74,7 @@ object JobType extends Enumeration {
   val ORC_OUTPUT_FORMAT = "org.apache.hadoop.hive.ql.io.orc.OrcOutputFormat"
   val APPLICATION_ID = "applicationId"
   val ENABLE_SPLIT_FLOW = "enableSplitFlow"
+  val PARTITION_SQL = "partitionSql"
 
   abstract class InnerValue extends Value {
     val mysqlStatus: String = ""
@@ -316,6 +317,7 @@ object EcAndFileCombine {
   val sparkShellFile = "/tmp/sparkShellForEcAndCombine.sh"
   val JAR_SUFFIX: String = ".jar"
   val ZIP_SUFFIX: String = ".zip"
+  val SPLIT_DELIMITER: String = "$$__$$"
   var onlineTestMode: Boolean = false
   var actionId: String = _
   var actionSid: String = _
@@ -773,10 +775,13 @@ class EcAndFileCombine {
       val mysqlId = successSchema.get(MYSQL_ID)
       val firstPartitionArr = successSchema.get(FIRST_PARTITION).split("=")
       assert(firstPartitionArr.size == 2)
-      val partitionSql = firstPartitionArr(0) + "='" + firstPartitionArr(1) + "'"
-      val alterDtLocationSql = s"alter table ${successSchema.get(DB_NAME) + "." + successSchema.get(TBL_NAME)}" +
+      val partitionSql = successSchema.get(PARTITION_SQL)
+      successSchema.get()
+      var alterDtLocationSql = s"alter table ${successSchema.get(DB_NAME) + "." + successSchema.get(TBL_NAME)}" +
         s" partition(${partitionSql}) set location '${successSchema.get(DEST_TBL_LOCATION).stripSuffix("/")}/" +
         s"${successSchema.get(FIRST_PARTITION)}'"
+
+      val fineGrainedPartitionSql = successSchema.get(PARTITION_SQL)
 
       // 以下操作具有原子性:①moveSourceCmd之后的命令抛异常 ②moveSourceCmd成功之后jvm随即退出
       idToRollBackCmd.put(mysqlId, rollbackCmd)
@@ -791,7 +796,16 @@ class EcAndFileCombine {
         InnerLogger.debug(InnerLogger.CHECK_MOD, "start to update mysql...")
         if (enableGobalSplitFlow) {
           // 如果是分流，那么需要修改dt级别的location
-          spark.sql(alterDtLocationSql)
+          if (fineGrainedPartitionSql != null && !fineGrainedPartitionSql.equals("")) {
+            val alterSqls = fineGrainedPartitionSql.split(SPLIT_DELIMITER)
+            alterSqls.foreach(sql => {
+              InnerLogger.debug(InnerLogger.CHECK_MOD, s"start to alter location:${sql}")
+              spark.sql(sql)
+            })
+          } else {
+            spark.sql(alterDtLocationSql)
+          }
+
         }
         MysqlSingleConn.updateStatus(jobType.mysqlStatus, SUCCESS_CODE, mysqlId.toInt)
         idToFlag.put(successSchema.get(MYSQL_ID), 3)
@@ -1177,6 +1191,7 @@ class EcAndFileCombine {
       val midTblLocation = schemaMap.get(MID_TBL_LOCATION)
       val midDTLocation = schemaMap.get(MID_DT_LOCATION)
       val sourceTblLocation = schemaMap.get(SOURCE_TBL_LOCATION)
+      val destTblLocation = schemaMap.get(DEST_TBL_LOCATION)
       val dbName = schemaMap.get(DB_NAME)
       val defaultParallelism = schemaMap.get(COMPUTED_PARALLELISM)
       val maxPartitionBytes = schemaMap.get(MAX_PARTITION_BYTES)
@@ -1208,6 +1223,8 @@ class EcAndFileCombine {
       var insertSql = s"insert overwrite table " + dbName + "." + midTblName + " partition (${partitionSql}) " +
         s"select /*+ repartition(${defaultParallelism}) */ * from " + tempViewName
       val countCheckSql = s"select count(1) from " + dbName + "." + midTblName + " where " + partitionPredicate
+
+      val resultMap = new java.util.HashMap[String, String]()
 
       InnerLogger.debug(InnerLogger.SPARK_MOD, "start to createTempView of source table...")
       val df = spark.sql(createDataSourceSql).drop(toDropPartitionField)
@@ -1344,7 +1361,9 @@ class EcAndFileCombine {
             else false
           })
           val staticLocations: Array[String] = allStaticPartitionsRows.map(_.get(0).toString)
-          val locationToStaticPartitionSql: Array[Tuple4[String, String, String, ArrayBuffer[String]]] = staticLocations.map(location => {
+          var fineGrainedPartitionSql = "alter table " + dbName + "." + midTblName + " partition(${par}) " +
+            s"set location '${destTblLocation.stripSuffix("/")}'"
+          val locationToStaticPartitionSql: Array[Tuple5[String, String, String, ArrayBuffer[String], String]] = staticLocations.map(location => {
             val partitions = location.split("/")
             val buffer = new ArrayBuffer[String]()
             val partitionColumns = new ArrayBuffer[String]()
@@ -1354,13 +1373,17 @@ class EcAndFileCombine {
               assert(kv.size == 2)
               buffer += kv(0) + "=" + "'" + kv(1) + "'"
               partitionColumns += kv(0)
+              fineGrainedPartitionSql = fineGrainedPartitionSql + s"/${kv(0)}=${kv(1)}"
             }
+            fineGrainedPartitionSql.replace("${par}", buffer.mkString(","))
 
-            Tuple4(location, buffer.mkString(" and "), buffer.mkString(","),
-              partitionColumns)
+            Tuple5(location, buffer.mkString(" and "), buffer.mkString(","),
+              partitionColumns, fineGrainedPartitionSql)
           })
+
           spark.conf.set("spark.sql.sources.partitionOverwriteMode", PartitionOverwriteMode.DYNAMIC.toString)
-          locationToStaticPartitionSql.foreach(location2Sql =>{
+          val fineGrainedPartitionSqls = new ArrayBuffer[String]()
+          locationToStaticPartitionSql.foreach(location2Sql => {
             val createDataSourceSql = "select * from " + srcTbl + " where " + location2Sql._2
             tempViewName = (tempViewName + "0" + location2Sql._1)
               .replace("/", "0").replace("=", "0")
@@ -1383,9 +1406,11 @@ class EcAndFileCombine {
               InnerLogger.debug(InnerLogger.SPARK_MOD, "start to execute insertion with static" +
                 s"partition: ${insertSql}")
               spark.sql(insertSql)
+              fineGrainedPartitionSqls += location2Sql._5
             }
           })
 
+          resultMap.put(PARTITION_SQL, fineGrainedPartitionSqls.mkString(SPLIT_DELIMITER))
           spark.conf.set("spark.sql.sources.partitionOverwriteMode", PartitionOverwriteMode.STATIC.toString)
 
         } else if (!repartitionByBucketOrPartition) {
@@ -1477,7 +1502,6 @@ class EcAndFileCombine {
       val outputFormat = spark.sql(s"select data_type from ${descViewName} " +
         s"where col_name='${OUTPUT_FORMAT}'").collect().apply(0).get(0).toString
 
-      val resultMap = new java.util.HashMap[String, String]()
       resultMap.putAll(schemaMap)
       resultMap.put(INPUT_FORMAT, inputFormat)
       resultMap.put(OUTPUT_FORMAT, outputFormat)
