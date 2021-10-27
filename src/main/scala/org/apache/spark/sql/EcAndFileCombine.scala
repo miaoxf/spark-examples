@@ -1350,7 +1350,7 @@ class EcAndFileCombine {
         })
         val staticLocations: Array[String] = allStaticPartitionsRows.map(_.get(0).toString)
         locationToStaticPartitionSql = staticLocations.map(location => {
-          var fineGrainedPartitionSql = "alter table " + dbName + "." + midTblName + " partition(${par}) " +
+          var fineGrainedPartitionSql = "alter table " + srcTbl + " partition(${par}) " +
             s"set location '${destTblLocation.stripSuffix("/")}"
           val partitions = location.split("/")
           val buffer = new ArrayBuffer[String]()
