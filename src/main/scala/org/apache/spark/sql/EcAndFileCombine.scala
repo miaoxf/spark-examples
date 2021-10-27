@@ -1369,6 +1369,8 @@ class EcAndFileCombine {
         })
       } catch {
         case e: Exception =>
+          InnerLogger.warn(InnerLogger.SPARK_MOD, "get locationToStaticPartitionSql failed!" +
+            "\n" + e.getStackTrace.mkString("\n"))
       }
 
       spark.conf.set("spark.sql.shuffle.partitions", defaultParallelism)
