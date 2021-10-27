@@ -1341,6 +1341,7 @@ class EcAndFileCombine {
       var locationToStaticPartitionSql: Array[Tuple5[String, String, String, ArrayBuffer[String], String]] = null
       try {
         // 所有分区都是静态分区的场景下，针对最细粒度的分区进行合并
+        val fineGrainedPartitionSqls = new ArrayBuffer[String]()
         val allStaticPartitionsRows: Array[Row] = showPartitionsRows.filter(row => {
           val partitionStr = row.get(0)
           if (partitionStr != null && partitionStr.toString.contains(firstPartition)) true
@@ -1367,6 +1368,12 @@ class EcAndFileCombine {
           Tuple5(location, buffer.mkString(" and "), buffer.mkString(","),
             partitionColumns, fineGrainedPartitionSql)
         })
+        locationToStaticPartitionSql.foreach(location2Sql => {
+          fineGrainedPartitionSqls += location2Sql._5
+        })
+        resultMap.put(PARTITION_SQL, fineGrainedPartitionSqls.mkString(SPLIT_DELIMITER))
+        InnerLogger.debug(InnerLogger.SPARK_MOD, s"fineGrainedPartitionSqls:" +
+          s"${fineGrainedPartitionSqls.mkString(SPLIT_DELIMITER)}")
       } catch {
         case e: Exception =>
           InnerLogger.warn(InnerLogger.SPARK_MOD, "get locationToStaticPartitionSql failed!" +
@@ -1390,7 +1397,7 @@ class EcAndFileCombine {
           // todo 这个参数会影响同时并发跑的其他job！
           assert(locationToStaticPartitionSql != null)
           spark.conf.set("spark.sql.sources.partitionOverwriteMode", PartitionOverwriteMode.DYNAMIC.toString)
-          val fineGrainedPartitionSqls = new ArrayBuffer[String]()
+
           locationToStaticPartitionSql.foreach(location2Sql => {
             val createDataSourceSql = "select * from " + srcTbl + " where " + location2Sql._2
             tempViewName = (tempViewName + "0" + location2Sql._1)
@@ -1414,13 +1421,10 @@ class EcAndFileCombine {
               InnerLogger.debug(InnerLogger.SPARK_MOD, "start to execute insertion with static" +
                 s"partition: ${insertSql}")
               spark.sql(insertSql)
-              fineGrainedPartitionSqls += location2Sql._5
+
             }
           })
 
-          resultMap.put(PARTITION_SQL, fineGrainedPartitionSqls.mkString(SPLIT_DELIMITER))
-          InnerLogger.debug(InnerLogger.SPARK_MOD, s"fineGrainedPartitionSqls:" +
-            s"${fineGrainedPartitionSqls.mkString(SPLIT_DELIMITER)}")
           spark.conf.set("spark.sql.sources.partitionOverwriteMode", PartitionOverwriteMode.STATIC.toString)
 
         } else if (!repartitionByBucketOrPartition) {
