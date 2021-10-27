@@ -1338,6 +1338,39 @@ class EcAndFileCombine {
       var maxRecordsPerFile: Long = 0
       InnerLogger.debug(InnerLogger.SPARK_MOD, s"repartitionByBucketOrPartition: ${repartitionByBucketOrPartition}")
 
+      var locationToStaticPartitionSql: Array[Tuple5[String, String, String, ArrayBuffer[String], String]] = null
+      try {
+        // 所有分区都是静态分区的场景下，针对最细粒度的分区进行合并
+        val allStaticPartitionsRows: Array[Row] = showPartitionsRows.filter(row => {
+          val partitionStr = row.get(0)
+          if (partitionStr != null && partitionStr.toString.contains(firstPartition)) true
+          else false
+        })
+        val staticLocations: Array[String] = allStaticPartitionsRows.map(_.get(0).toString)
+        locationToStaticPartitionSql = staticLocations.map(location => {
+          var fineGrainedPartitionSql = "alter table " + dbName + "." + midTblName + " partition(${par}) " +
+            s"set location '${destTblLocation.stripSuffix("/")}"
+          val partitions = location.split("/")
+          val buffer = new ArrayBuffer[String]()
+          val partitionColumns = new ArrayBuffer[String]()
+          for (i <- Range(0, partitions.size)) {
+            val part = partitions(i)
+            val kv = part.split("=")
+            assert(kv.size == 2)
+            buffer += kv(0) + "=" + "'" + kv(1) + "'"
+            partitionColumns += kv(0)
+            fineGrainedPartitionSql = fineGrainedPartitionSql + s"/${kv(0)}=${kv(1)}"
+          }
+          fineGrainedPartitionSql = fineGrainedPartitionSql.replace("${par}", buffer.mkString(","))
+          fineGrainedPartitionSql = fineGrainedPartitionSql + "'"
+
+          Tuple5(location, buffer.mkString(" and "), buffer.mkString(","),
+            partitionColumns, fineGrainedPartitionSql)
+        })
+      } catch {
+        case e: Exception =>
+      }
+
       spark.conf.set("spark.sql.shuffle.partitions", defaultParallelism)
 
       InnerLogger.debug(InnerLogger.SPARK_MOD, "start to insert data into mid table...")
@@ -1353,35 +1386,7 @@ class EcAndFileCombine {
           // 动态分区仍然开启，通过动态分区的方式insert，但是overwrite模式改成动态的!
           // todo 考虑并发执行
           // todo 这个参数会影响同时并发跑的其他job！
-
-          // 所有分区都是静态分区的场景下，针对最细粒度的分区进行合并
-          val allStaticPartitionsRows: Array[Row] = showPartitionsRows.filter(row => {
-            val partitionStr = row.get(0)
-            if (partitionStr != null && partitionStr.toString.contains(firstPartition)) true
-            else false
-          })
-          val staticLocations: Array[String] = allStaticPartitionsRows.map(_.get(0).toString)
-          val locationToStaticPartitionSql: Array[Tuple5[String, String, String, ArrayBuffer[String], String]] = staticLocations.map(location => {
-            var fineGrainedPartitionSql = "alter table " + dbName + "." + midTblName + " partition(${par}) " +
-              s"set location '${destTblLocation.stripSuffix("/")}"
-            val partitions = location.split("/")
-            val buffer = new ArrayBuffer[String]()
-            val partitionColumns = new ArrayBuffer[String]()
-            for (i <- Range(0, partitions.size)) {
-              val part = partitions(i)
-              val kv = part.split("=")
-              assert(kv.size == 2)
-              buffer += kv(0) + "=" + "'" + kv(1) + "'"
-              partitionColumns += kv(0)
-              fineGrainedPartitionSql = fineGrainedPartitionSql + s"/${kv(0)}=${kv(1)}"
-            }
-            fineGrainedPartitionSql = fineGrainedPartitionSql.replace("${par}", buffer.mkString(","))
-            fineGrainedPartitionSql = fineGrainedPartitionSql + "'"
-
-            Tuple5(location, buffer.mkString(" and "), buffer.mkString(","),
-              partitionColumns, fineGrainedPartitionSql)
-          })
-
+          assert(locationToStaticPartitionSql != null)
           spark.conf.set("spark.sql.sources.partitionOverwriteMode", PartitionOverwriteMode.DYNAMIC.toString)
           val fineGrainedPartitionSqls = new ArrayBuffer[String]()
           locationToStaticPartitionSql.foreach(location2Sql => {
