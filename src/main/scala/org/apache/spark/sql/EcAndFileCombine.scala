@@ -1342,6 +1342,7 @@ class EcAndFileCombine {
       try {
         // 所有分区都是静态分区的场景下，针对最细粒度的分区进行合并
         val fineGrainedPartitionSqls = new ArrayBuffer[String]()
+        assert(showPartitionsRows != null)
         val allStaticPartitionsRows: Array[Row] = showPartitionsRows.filter(row => {
           val partitionStr = row.get(0)
           if (partitionStr != null && partitionStr.toString.contains(firstPartition)) true
@@ -1371,9 +1372,11 @@ class EcAndFileCombine {
         locationToStaticPartitionSql.foreach(location2Sql => {
           fineGrainedPartitionSqls += location2Sql._5
         })
-        resultMap.put(PARTITION_SQL, fineGrainedPartitionSqls.mkString(SPLIT_DELIMITER))
-        InnerLogger.debug(InnerLogger.SPARK_MOD, s"fineGrainedPartitionSqls:" +
-          s"${fineGrainedPartitionSqls.mkString(SPLIT_DELIMITER)}")
+        if (!fineGrainedPartitionSqls.isEmpty) {
+          resultMap.put(PARTITION_SQL, fineGrainedPartitionSqls.mkString(SPLIT_DELIMITER))
+          InnerLogger.debug(InnerLogger.SPARK_MOD, s"fineGrainedPartitionSqls:" +
+            s"${fineGrainedPartitionSqls.mkString(SPLIT_DELIMITER)}")
+        }
       } catch {
         case e: Exception =>
           InnerLogger.warn(InnerLogger.SPARK_MOD, "get locationToStaticPartitionSql failed!" +
