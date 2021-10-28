@@ -19,16 +19,18 @@ object AlterPartition {
     val targetTable = args(0).toString
     alterToNewCluster = args(1).toBoolean
     executeAlter = args(2).toBoolean
-    val sql = if (args.size>3) args(3)
-    else {
+
+    val begin = if (args.size>3) args(3) else 1635303600
+    val end = if (args.size>4) args(4) else 1635332400
+
+    val sql =
       s"""
          |select id,location,first_partition,db_name,tbl_name,cluster_old
          | from ${targetTable}
          | where ec_status=2
-         | and num_partitions>1 and last_modify_time>from_unixtime(1635303600)
-         |  and last_modify_time<from_unixtime(1635332400)
+         | and num_partitions>1 and last_modify_time>=from_unixtime(${begin})
+         |  and last_modify_time<=from_unixtime(${end})
          |""".stripMargin
-    }
 
     val jars = new java.util.ArrayList[String]()
     loadJars(new File(sparkHomePath.stripSuffix("/") + "/jars"), jars)
