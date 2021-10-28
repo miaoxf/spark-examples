@@ -13,13 +13,22 @@ object AlterPartition {
   var spark: SparkSession = null
   val records = new java.util.HashMap[String, Record]()
   var executeAlter: Boolean = false
+  var alterToNewCluster: Boolean = false
 
   def main(args: Array[String]): Unit = {
     val targetTable = args(0).toString
-    val newCluster = args(1)
+    alterToNewCluster = args(1).toBoolean
     executeAlter = args(2).toBoolean
-    val sql = if (args.size>3) args(3) else s"select id,location,first_partition,db_name,tbl_name from ${targetTable} where ec_status=2" +
-      s" and num_partitions>1 and last_modify_time>from_unixtime(1635303600)"
+    val sql = if (args.size>3) args(3)
+    else {
+      s"""
+         |select id,location,first_partition,db_name,tbl_name,cluster_old
+         | from ${targetTable}
+         | where ec_status=2
+         | and num_partitions>1 and last_modify_time>from_unixtime(1635303600)
+         |  and last_modify_time<from_unixtime(1635332400)
+         |""".stripMargin
+    }
 
     val jars = new java.util.ArrayList[String]()
     loadJars(new File(sparkHomePath.stripSuffix("/") + "/jars"), jars)
@@ -53,7 +62,9 @@ object AlterPartition {
       record.tblName = resultSet.getString("tbl_name")
       val initCluster = ("//[^/]*/".r findFirstIn record.location).get.replaceAll("/", "")
       val prefix = "hdfs://" + initCluster
-      record.destTblLocation = record.location.replace(prefix, newCluster)
+      record.destTblLocation = record.location.stripSuffix(record.firstPartition)
+      record.sourceTblLocation = record.location.stripSuffix(record.firstPartition)
+        .replace(prefix, "hdfs://" + resultSet.getString("cluster_old"))
       records.put(record.getId.toString, record)
     }
     records.forEach((k, v) => {
@@ -79,7 +90,7 @@ object AlterPartition {
 
     locationToStaticPartitionSql = staticLocations.map(location => {
       var fineGrainedPartitionSql = "alter table " + srcTbl + " partition(${par}) " +
-        s"set location '${record.destTblLocation.stripSuffix("/")}"
+        s"set location '${if (alterToNewCluster) record.destTblLocation.stripSuffix("/") else record.sourceTblLocation.stripSuffix("/")}"
       val partitions = location.split("/")
       val buffer = new ArrayBuffer[String]()
       val partitionColumns = new ArrayBuffer[String]()
