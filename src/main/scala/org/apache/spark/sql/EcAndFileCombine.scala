@@ -17,7 +17,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
 import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
 import org.apache.spark.sql.JobType.{JobType, MID_DT_LOCATION, Record}
-import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, START_SPLIT_FLOW, SUCCESS_CODE, defaultMySQLConfig}
+import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, defaultMySQLConfig}
 import org.apache.spark.sql.catalyst.QueryPlanningTracker
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAlias, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{Ascending, SortOrder}
@@ -219,6 +219,9 @@ object MysqlSingleConn {
   val SKIP_WORK = 4
   val ORC_DUMP_FAILED = 5
   val PROCESS_KILLED = 6
+  val SOURCE_IN_SOURCE_DIR = 10
+  val SOURCE_IN_TEMPORARY_DIR = 11
+  val DATA_IN_DEST_DIR = 12
   val START_SPLIT_FLOW = 3
   val lock = new ReentrantLock()
   var conn: Connection = null
@@ -796,12 +799,16 @@ class EcAndFileCombine {
       // 以下操作具有原子性:①moveSourceCmd之后的命令抛异常 ②moveSourceCmd成功之后jvm随即退出
       idToRollBackCmd.put(mysqlId, rollbackCmd)
       idToFlag.put(mysqlId, 0)
+      MysqlSingleConn.updateStatus(jobType.mysqlStatus, SOURCE_IN_SOURCE_DIR, mysqlId.toInt)
       runCmd(moveSourceCmd, mysqlId, InnerLogger.CHECK_MOD)
+      // 数据此时在backup/mid_tbl_to_be_deleted/__temporary中
+      MysqlSingleConn.updateStatus(jobType.mysqlStatus, SOURCE_IN_TEMPORARY_DIR, mysqlId.toInt)
       // 如果到这一步,下面的命令必须执行成功,否则就需要回滚上一步命令
       try {
         idToFlag.put(mysqlId, 1)
         InnerLogger.info(InnerLogger.CHECK_MOD, s"move mid location to source dir: ${moveMidCmd}")
         runCmd(moveMidCmd, mysqlId, InnerLogger.CHECK_MOD)
+        MysqlSingleConn.updateStatus(jobType.mysqlStatus, DATA_IN_DEST_DIR, mysqlId.toInt)
         idToFlag.put(mysqlId, 2)
         InnerLogger.debug(InnerLogger.CHECK_MOD, "start to update mysql...")
         if (enableGobalSplitFlow) {
@@ -869,7 +876,7 @@ class EcAndFileCombine {
       }
 
       // rename tobedelete to boundtobedelete
-      // 保证该命令后，没有mysql或者hdfs的修改操作
+      // 保证该命令后，没有 mysql或者hdfs的修改操作
       runCmd(renameTempToDelDirCmd, mysqlId, InnerLogger.CHECK_MOD)
 
       // 更新status为mysql中的最新值。
