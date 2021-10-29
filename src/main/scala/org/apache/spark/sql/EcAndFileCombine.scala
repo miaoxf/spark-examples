@@ -339,6 +339,7 @@ object EcAndFileCombine {
   var enableFileSizeOrder: Boolean = true
   var onlyHandleOneLevelPartition: Boolean = true
   var enableFineGrainedInsertion: Boolean = false
+  var onlyCoalesce: Boolean = false
   var enableOrcDumpWithSpark: Boolean = false
   var handleFileSizeOrder: String = "asc"
   // 标识是否开启分流,such as: vipdw.tableA,vipdw.tableB
@@ -549,9 +550,10 @@ object EcAndFileCombine {
     filesTotalThreshold = if (args.size > 14) args(14).toLong else 20000
     onlyHandleOneLevelPartition = if (args.size > 15) args(15).toBoolean else true
     enableFineGrainedInsertion = if (args.size > 16) args(16).toBoolean else false
-    enableOrcDumpWithSpark = if (args.size > 17) args(17).toBoolean else false
-    fileCombineThreshold = if (args.size > 18) args(18).toLong else 104857600
-    submitSparkShell = if (args.size > 19) args(19).toBoolean else true
+    onlyCoalesce = if (args.size > 17) args(17).toBoolean else false
+    enableOrcDumpWithSpark = if (args.size > 18) args(18).toBoolean else false
+    fileCombineThreshold = if (args.size > 19) args(19).toLong else 104857600
+    submitSparkShell = if (args.size > 20) args(20).toBoolean else true
   }
 
   def main(args: Array[String]): Unit = {
@@ -1429,7 +1431,7 @@ class EcAndFileCombine {
       InnerLogger.debug(InnerLogger.SPARK_MOD, "start to insert data into mid table...")
       try {
         // defaultParallelism本身就是不大于initFileNums
-        if (initFileNums == defaultParallelism.toLong) {
+        if (onlyCoalesce || initFileNums == defaultParallelism.toLong) {
           // 特定场景下可以改为coalesce，避免shuffle。
           insertSql = insertSql.replace("repartition", "coalesce")
           InnerLogger.info(InnerLogger.SPARK_MOD, s"start to execute insertion with coalesce: spark.sql(${insertSql})")
