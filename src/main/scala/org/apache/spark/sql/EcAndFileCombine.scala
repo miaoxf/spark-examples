@@ -897,7 +897,8 @@ class EcAndFileCombine {
     }
   }
 
-  def encapsulateTargetSizeWork(targetBatchSize: Int, pool: ThreadPoolExecutor): Unit = {
+  /** return 是否继续寻找合适的数据 */
+  def encapsulateTargetSizeWork(targetBatchSize: Int, pool: ThreadPoolExecutor): Boolean = {
     // 获取record
     // todo 支持事务吗？
     // todo 如果是非表等数据，过滤掉
@@ -929,7 +930,10 @@ class EcAndFileCombine {
     InnerLogger.debug(InnerLogger.ENCAP_MOD, s"ids: [${ids}]; sql of getIds:[${getIds}]")
     if (!shouldContinue) {
       InnerLogger.warn(InnerLogger.ENCAP_MOD, s"ids: ${ids}, no suitable record found in mysql,exit!")
-      sys.exit(1)
+      if (curJobs.size() > 0) {
+        return false
+      }
+      sys.exit(0)
     }
 
     if (!onlineTestMode) {
@@ -1038,7 +1042,7 @@ class EcAndFileCombine {
         }
       }
     )
-
+    true
   }
 
   /** encapsulate work of ec or file_combine */
@@ -1060,11 +1064,10 @@ class EcAndFileCombine {
     val pool: ThreadPoolExecutor = new ThreadPoolExecutor(batchSize, batchSize, 0L,
       TimeUnit.MILLISECONDS, new LinkedBlockingQueue[Runnable])
     var circTimes = 0
-    while (curJobs.size() < batchSize && circTimes < 10) {
+    while (curJobs.size() < batchSize && circTimes < 10
+      && encapsulateTargetSizeWork(batchSize - curJobs.size(), pool)) {
       circTimes += 1
-      val targetSize = batchSize - curJobs.size()
       // todo 如果这样，targetSize越来越小，查询的次数越来越多
-      encapsulateTargetSizeWork(targetSize, pool)
     }
 
     // 汇总所有成功的job的执行结果
