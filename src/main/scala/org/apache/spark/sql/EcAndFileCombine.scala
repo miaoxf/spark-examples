@@ -340,6 +340,7 @@ object EcAndFileCombine {
   var onlyHandleOneLevelPartition: Boolean = true
   var enableFineGrainedInsertion: Boolean = false
   var onlyCoalesce: Boolean = false
+  var enableHandleBucketTable: Boolean = false
   var enableOrcDumpWithSpark: Boolean = false
   var handleFileSizeOrder: String = "asc"
   // 标识是否开启分流,such as: vipdw.tableA,vipdw.tableB
@@ -551,9 +552,10 @@ object EcAndFileCombine {
     onlyHandleOneLevelPartition = if (args.size > 15) args(15).toBoolean else true
     enableFineGrainedInsertion = if (args.size > 16) args(16).toBoolean else false
     onlyCoalesce = if (args.size > 17) args(17).toBoolean else false
-    enableOrcDumpWithSpark = if (args.size > 18) args(18).toBoolean else false
-    fileCombineThreshold = if (args.size > 19) args(19).toLong else 104857600
-    submitSparkShell = if (args.size > 20) args(20).toBoolean else true
+    enableHandleBucketTable = if (args.size > 18) args(18).toBoolean else false
+    enableOrcDumpWithSpark = if (args.size > 19) args(19).toBoolean else false
+    fileCombineThreshold = if (args.size > 20) args(20).toLong else 104857600
+    submitSparkShell = if (args.size > 21) args(21).toBoolean else true
   }
 
   def main(args: Array[String]): Unit = {
@@ -1071,6 +1073,7 @@ class EcAndFileCombine {
     }
 
     // 汇总所有成功的job的执行结果
+    // todo 汇总所有失败的job的信息
     val metric = new StringBuffer("")
     curJobs.values().toArray.map(json => {
       val singleMetric = new StringBuffer("\n")
@@ -1380,6 +1383,9 @@ class EcAndFileCombine {
       if (bucketColumns != null && bucketColumns.size > 0) {
         allStaticPartition = false
         repartitionByBucketOrPartition = true
+        if (!enableHandleBucketTable) {
+          return
+        }
       }
       var maxRecordsPerFile: Long = 0
       InnerLogger.debug(InnerLogger.SPARK_MOD, s"repartitionByBucketOrPartition: ${repartitionByBucketOrPartition}")
