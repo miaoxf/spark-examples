@@ -881,6 +881,7 @@ class EcAndFileCombine {
 
       // rename tobedelete to boundtobedelete
       // 保证该命令后，没有 mysql或者hdfs的修改操作
+      s"hdfs dfs -mkdir -p ${boundToBeDelLocation}".!
       runCmd(renameTempToDelDirCmd, mysqlId, InnerLogger.CHECK_MOD)
 
       // 更新status为mysql中的最新值。
@@ -1229,7 +1230,7 @@ class EcAndFileCombine {
 
     }
 
-    def runSingleCombineWork(value: String) = {
+    def runSingleCombineWork(value: String): Unit = {
       InnerLogger.debug(InnerLogger.SPARK_MOD, s"start to runSingleCombineWork...value[${value}]")
 
       val schemaMap = mapper.readValue(value, classOf[java.util.HashMap[String, String]])
@@ -1384,6 +1385,7 @@ class EcAndFileCombine {
         allStaticPartition = false
         repartitionByBucketOrPartition = true
         if (!enableHandleBucketTable) {
+          InnerLogger.warn(InnerLogger.SPARK_MOD, s"this is a bucket table[${srcTbl}],skip inserting!")
           return
         }
       }
