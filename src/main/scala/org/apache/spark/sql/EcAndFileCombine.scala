@@ -17,7 +17,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
 import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
 import org.apache.spark.sql.JobType.{JobType, MID_DT_LOCATION, Record}
-import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SUCCESS_CODE, defaultMySQLConfig}
+import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, defaultMySQLConfig}
 import org.apache.spark.sql.catalyst.QueryPlanningTracker
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAlias, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{Ascending, SortOrder}
@@ -29,11 +29,12 @@ import java.io.{BufferedInputStream, File, FileInputStream}
 import java.lang.reflect.Method
 import java.net.{URL, URLClassLoader}
 import java.sql.{Connection, DriverManager, ResultSet}
+import java.text.SimpleDateFormat
 import java.util
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 import java.util.stream.Collectors
-import java.util.{Locale, UUID, stream}
+import java.util.{Date, Locale, UUID, stream}
 import scala.collection.immutable.Range
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
@@ -57,6 +58,7 @@ object JobType extends Enumeration {
   val SOURCE_TBL_LOCATION = "sourceTblLocation"
   val DEST_TBL_LOCATION = "destTblLocation"
   val TO_BE_DEL_LOCATION = "toBeDelLocation"
+  val BOUND_TO_BE_DEL_LOCATION = "boundToBeDelLocation"
   val TOTAL_FILE_SIZE = "totalFileSize"
   val NUM_OF_PARTITION_LEVEL = "numOfPartitionLevel"
   val LARGEST_FILE_SIZE = "largestFileSize"
@@ -109,6 +111,7 @@ object JobType extends Enumeration {
     var sourceTblLocation: String = ""
     var destTblLocation: String = ""
     var toBeDelLocation: String = ""
+    var boundToBeDelLocation: String = ""
     var totalFileSize: Long = -1
     var numOfPartitionLevel: String = ""
     var largestFileSize: String = ""
@@ -140,6 +143,7 @@ object JobType extends Enumeration {
       res.put(MID_TBL_LOCATION, midTblLocation)
       res.put(MID_DT_LOCATION, midDTLocation);
       res.put(TO_BE_DEL_LOCATION, toBeDelLocation)
+      res.put(BOUND_TO_BE_DEL_LOCATION, boundToBeDelLocation)
       res.put(SOURCE_TBL_LOCATION, sourceTblLocation);
       res.put(TOTAL_FILE_SIZE, totalFileSize.toString)
       res.put(NUM_OF_PARTITION_LEVEL, numOfPartitionLevel);
@@ -159,6 +163,7 @@ object JobType extends Enumeration {
         STATUS + "->" + status.toString + "\t" + CLUSTER + "->" + cluster + "\t" + DT + "->" + dt + "\t" +
         MID_TBL_NAME + "->" + midTblName + "\t" + MID_TBL_LOCATION + "->" + midTblLocation + "\t" +
         MID_DT_LOCATION + "->" + midDTLocation + "\t" + TO_BE_DEL_LOCATION + "->" + toBeDelLocation + "\t" +
+        BOUND_TO_BE_DEL_LOCATION + "->" + boundToBeDelLocation + "\t" +
         SOURCE_TBL_LOCATION + "->" + sourceTblLocation + "\t" + ENABLE_SPLIT_FLOW + "->" + enableSplitFlow + "\t" +
         DEST_TBL_LOCATION + "->" + destTblLocation + "\t" + TOTAL_FILE_SIZE + "->" + totalFileSize.toString + "\t" +
         NUM_OF_PARTITION_LEVEL + "->" + numOfPartitionLevel + "\t" + LARGEST_FILE_SIZE + "->" + largestFileSize + "\t" +
@@ -214,6 +219,10 @@ object MysqlSingleConn {
   val SKIP_WORK = 4
   val ORC_DUMP_FAILED = 5
   val PROCESS_KILLED = 6
+  val SOURCE_IN_SOURCE_DIR = 10
+  val SOURCE_IN_TEMPORARY_DIR = 11
+  val DATA_IN_DEST_DIR = 12
+  val START_SPLIT_FLOW = 3
   val lock = new ReentrantLock()
   var conn: Connection = null
   Class.forName("com.mysql.jdbc.Driver")
@@ -330,6 +339,8 @@ object EcAndFileCombine {
   var enableFileSizeOrder: Boolean = true
   var onlyHandleOneLevelPartition: Boolean = true
   var enableFineGrainedInsertion: Boolean = false
+  var onlyCoalesce: Boolean = false
+  var enableHandleBucketTable: Boolean = false
   var enableOrcDumpWithSpark: Boolean = false
   var handleFileSizeOrder: String = "asc"
   // 标识是否开启分流,such as: vipdw.tableA,vipdw.tableB
@@ -341,6 +352,7 @@ object EcAndFileCombine {
   var fileCombineThreshold: Long = _
   var submitSparkShell: Boolean = _
   var testMode: Boolean = false
+  val sdf = new SimpleDateFormat("yyyyMMdd")
 
   //  ExtClasspathLoader.loadClasspath(new File(
   //    "/home/vipshop/platform/spark-3.0.1/jars/spark-sql_2.12-3.0.1-SNAPSHOT.jar"))
@@ -539,9 +551,11 @@ object EcAndFileCombine {
     filesTotalThreshold = if (args.size > 14) args(14).toLong else 20000
     onlyHandleOneLevelPartition = if (args.size > 15) args(15).toBoolean else true
     enableFineGrainedInsertion = if (args.size > 16) args(16).toBoolean else false
-    enableOrcDumpWithSpark = if (args.size > 17) args(17).toBoolean else false
-    fileCombineThreshold = if (args.size > 18) args(18).toLong else 104857600
-    submitSparkShell = if (args.size > 19) args(19).toBoolean else true
+    onlyCoalesce = if (args.size > 17) args(17).toBoolean else false
+    enableHandleBucketTable = if (args.size > 18) args(18).toBoolean else false
+    enableOrcDumpWithSpark = if (args.size > 19) args(19).toBoolean else false
+    fileCombineThreshold = if (args.size > 20) args(20).toLong else 104857600
+    submitSparkShell = if (args.size > 21) args(21).toBoolean else true
   }
 
   def main(args: Array[String]): Unit = {
@@ -755,6 +769,9 @@ class EcAndFileCombine {
       s"hdfs dfs -rm ${successSchema.get(SUCCESS_FILE_LOCATION)}".!
       InnerLogger.debug(InnerLogger.CHECK_MOD, "start to change dir of source and mid...")
       val toBeDelLocation = successSchema.get(TO_BE_DEL_LOCATION)
+      val boundToBeDelLocation = successSchema.get(BOUND_TO_BE_DEL_LOCATION)
+      val tempToBeDelLocation = toBeDelLocation.stripSuffix("/") + "/" + successSchema.get(FIRST_PARTITION)
+      val renameTempToDelDirCmd = s"hdfs dfs -mv ${tempToBeDelLocation} ${boundToBeDelLocation}"
       val moveSourceCmd = s"hdfs dfs -mv ${successSchema.get(LOCATION)}" +
         s" ${toBeDelLocation}"
       val mkdirCmd = s"hdfs dfs -mkdir -p ${toBeDelLocation}"
@@ -786,15 +803,20 @@ class EcAndFileCombine {
       // 以下操作具有原子性:①moveSourceCmd之后的命令抛异常 ②moveSourceCmd成功之后jvm随即退出
       idToRollBackCmd.put(mysqlId, rollbackCmd)
       idToFlag.put(mysqlId, 0)
+      MysqlSingleConn.updateStatus(jobType.mysqlStatus, SOURCE_IN_SOURCE_DIR, mysqlId.toInt)
       runCmd(moveSourceCmd, mysqlId, InnerLogger.CHECK_MOD)
+      // 数据此时在backup/mid_tbl_to_be_deleted/__temporary中
+      MysqlSingleConn.updateStatus(jobType.mysqlStatus, SOURCE_IN_TEMPORARY_DIR, mysqlId.toInt)
       // 如果到这一步,下面的命令必须执行成功,否则就需要回滚上一步命令
       try {
         idToFlag.put(mysqlId, 1)
         InnerLogger.info(InnerLogger.CHECK_MOD, s"move mid location to source dir: ${moveMidCmd}")
         runCmd(moveMidCmd, mysqlId, InnerLogger.CHECK_MOD)
+        MysqlSingleConn.updateStatus(jobType.mysqlStatus, DATA_IN_DEST_DIR, mysqlId.toInt)
         idToFlag.put(mysqlId, 2)
         InnerLogger.debug(InnerLogger.CHECK_MOD, "start to update mysql...")
         if (enableGobalSplitFlow) {
+          MysqlSingleConn.updateStatus("split_flow_status", START_SPLIT_FLOW, mysqlId.toInt)
           // 如果是分流，那么需要修改dt级别的location
           if (fineGrainedPartitionSql != null && !fineGrainedPartitionSql.equals("")) {
             val alterSqls = fineGrainedPartitionSql.split(SPLIT_DELIMITER)
@@ -805,9 +827,24 @@ class EcAndFileCombine {
           } else {
             spark.sql(alterDtLocationSql)
           }
+          val updateSuccessSql =
+            s"""
+              |update ${targetMysqlTable}
+              |set split_flow_status = ${SUCCESS_CODE},${jobType.mysqlStatus} = ${SUCCESS_CODE}
+              |where id = ${mysqlId}
+              |""".stripMargin
 
+          if (MysqlSingleConn.updateQuery(updateSuccessSql) <= 0){
+            InnerLogger.error(InnerLogger.CHECK_MOD,s"update success status failed! [sql: ${updateSuccessSql}]")
+            throw new RuntimeException(s"update success status failed! [sql: ${updateSuccessSql}]")
+          }
+
+          InnerLogger.debug(InnerLogger.CHECK_MOD, s"split flow and execute alter location of" +
+              s" dest dt location:${alterDtLocationSql}")
+
+        } else {
+          MysqlSingleConn.updateStatus(jobType.mysqlStatus, SUCCESS_CODE, mysqlId.toInt)
         }
-        MysqlSingleConn.updateStatus(jobType.mysqlStatus, SUCCESS_CODE, mysqlId.toInt)
         idToFlag.put(successSchema.get(MYSQL_ID), 3)
       } finally {
         if (idToFlag.get(mysqlId) != 3) {
@@ -834,13 +871,18 @@ class EcAndFileCombine {
              |""".stripMargin
         if (MysqlSingleConn.updateQuery(updateLocationAndClusterSql) <= 0){
           InnerLogger.error(InnerLogger.CHECK_MOD,s"update location and cluster_old failed! [sql: ${updateLocationAndClusterSql}]")
-          sys.exit(1)
+          throw new RuntimeException(s"update location and cluster_old failed! [sql: ${updateLocationAndClusterSql}]")
         } else {
           InnerLogger.debug(InnerLogger.CHECK_MOD, s"split flow and execute alter location of" +
             s" dest dt location:${alterDtLocationSql}")
         }
         // todo drop mid dt location
       }
+
+      // rename tobedelete to boundtobedelete
+      // 保证该命令后，没有 mysql或者hdfs的修改操作
+      s"hdfs dfs -mkdir -p ${boundToBeDelLocation}".!
+      runCmd(renameTempToDelDirCmd, mysqlId, InnerLogger.CHECK_MOD)
 
       // 更新status为mysql中的最新值。
       val rs = MysqlSingleConn.executeQuery(s"select ${jobType.mysqlStatus} from " +
@@ -858,7 +900,8 @@ class EcAndFileCombine {
     }
   }
 
-  def encapsulateTargetSizeWork(targetBatchSize: Int, pool: ThreadPoolExecutor): Unit = {
+  /** return 是否继续寻找合适的数据 */
+  def encapsulateTargetSizeWork(targetBatchSize: Int, pool: ThreadPoolExecutor): Boolean = {
     // 获取record
     // todo 支持事务吗？
     // todo 如果是非表等数据，过滤掉
@@ -890,7 +933,10 @@ class EcAndFileCombine {
     InnerLogger.debug(InnerLogger.ENCAP_MOD, s"ids: [${ids}]; sql of getIds:[${getIds}]")
     if (!shouldContinue) {
       InnerLogger.warn(InnerLogger.ENCAP_MOD, s"ids: ${ids}, no suitable record found in mysql,exit!")
-      sys.exit(1)
+      if (curJobs.size() > 0) {
+        return false
+      }
+      sys.exit(0)
     }
 
     if (!onlineTestMode) {
@@ -947,7 +993,11 @@ class EcAndFileCombine {
       record.midTblLocation = s"hdfs://${record.cluster}/backup/mid_tbl_to_check/" +
         s"${record.dbName}/${record.tblName}"
       record.midDTLocation = s"${record.midTblLocation}/${record.firstPartition}"
-      record.toBeDelLocation = s"hdfs://${initCluster}/backup/mid_tbl_to_be_deleted/" +
+      // 这部分数据可能会有回滚的需求
+      record.toBeDelLocation = s"hdfs://${initCluster}/backup/mid_tbl_to_be_deleted/__temporary/" +
+        s"${record.dbName}/${record.tblName}"
+      // 这部分数据是肯定成功的数据，必然会删除的
+      record.boundToBeDelLocation = s"hdfs://${initCluster}/backup/mid_tbl_to_be_deleted/bak_dt=${sdf.format(new Date())}/" +
         s"${record.dbName}/${record.tblName}"
       record.successFileLocation = s"${record.midDTLocation}".stripSuffix("/") + "/.COMBINE_SUCCESS"
       // note 只覆盖了分区表的场景
@@ -995,7 +1045,7 @@ class EcAndFileCombine {
         }
       }
     )
-
+    true
   }
 
   /** encapsulate work of ec or file_combine */
@@ -1017,14 +1067,14 @@ class EcAndFileCombine {
     val pool: ThreadPoolExecutor = new ThreadPoolExecutor(batchSize, batchSize, 0L,
       TimeUnit.MILLISECONDS, new LinkedBlockingQueue[Runnable])
     var circTimes = 0
-    while (curJobs.size() < batchSize && circTimes < 10) {
+    while (curJobs.size() < batchSize && circTimes < 10
+      && encapsulateTargetSizeWork(batchSize - curJobs.size(), pool)) {
       circTimes += 1
-      val targetSize = batchSize - curJobs.size()
       // todo 如果这样，targetSize越来越小，查询的次数越来越多
-      encapsulateTargetSizeWork(targetSize, pool)
     }
 
     // 汇总所有成功的job的执行结果
+    // todo 汇总所有失败的job的信息
     val metric = new StringBuffer("")
     curJobs.values().toArray.map(json => {
       val singleMetric = new StringBuffer("\n")
@@ -1180,7 +1230,7 @@ class EcAndFileCombine {
 
     }
 
-    def runSingleCombineWork(value: String) = {
+    def runSingleCombineWork(value: String): Unit = {
       InnerLogger.debug(InnerLogger.SPARK_MOD, s"start to runSingleCombineWork...value[${value}]")
 
       val schemaMap = mapper.readValue(value, classOf[java.util.HashMap[String, String]])
@@ -1334,6 +1384,10 @@ class EcAndFileCombine {
       if (bucketColumns != null && bucketColumns.size > 0) {
         allStaticPartition = false
         repartitionByBucketOrPartition = true
+        if (!enableHandleBucketTable) {
+          InnerLogger.warn(InnerLogger.SPARK_MOD, s"this is a bucket table[${srcTbl}],skip inserting!")
+          return
+        }
       }
       var maxRecordsPerFile: Long = 0
       InnerLogger.debug(InnerLogger.SPARK_MOD, s"repartitionByBucketOrPartition: ${repartitionByBucketOrPartition}")
@@ -1388,7 +1442,7 @@ class EcAndFileCombine {
       InnerLogger.debug(InnerLogger.SPARK_MOD, "start to insert data into mid table...")
       try {
         // defaultParallelism本身就是不大于initFileNums
-        if (initFileNums == defaultParallelism.toLong) {
+        if (onlyCoalesce || initFileNums == defaultParallelism.toLong) {
           // 特定场景下可以改为coalesce，避免shuffle。
           insertSql = insertSql.replace("repartition", "coalesce")
           InnerLogger.info(InnerLogger.SPARK_MOD, s"start to execute insertion with coalesce: spark.sql(${insertSql})")
