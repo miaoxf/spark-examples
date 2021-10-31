@@ -337,6 +337,7 @@ object EcAndFileCombine {
   var sparkConcurrency: Int = 1
   var filesTotalThreshold: Long = 20000
   var enableFileSizeOrder: Boolean = true
+  var enableFileCountOrder: Boolean = true
   var onlyHandleOneLevelPartition: Boolean = true
   var enableFineGrainedInsertion: Boolean = false
   var onlyCoalesce: Boolean = false
@@ -553,9 +554,10 @@ object EcAndFileCombine {
     enableFineGrainedInsertion = if (args.size > 16) args(16).toBoolean else false
     onlyCoalesce = if (args.size > 17) args(17).toBoolean else false
     enableHandleBucketTable = if (args.size > 18) args(18).toBoolean else false
-    enableOrcDumpWithSpark = if (args.size > 19) args(19).toBoolean else false
-    fileCombineThreshold = if (args.size > 20) args(20).toLong else 104857600
-    submitSparkShell = if (args.size > 21) args(21).toBoolean else true
+    enableFileCountOrder = if (args.size > 19) args(19).toBoolean else true
+    enableOrcDumpWithSpark = if (args.size > 20) args(20).toBoolean else false
+    fileCombineThreshold = if (args.size > 21) args(21).toLong else 104857600
+    submitSparkShell = if (args.size > 22) args(22).toBoolean else true
   }
 
   def main(args: Array[String]): Unit = {
@@ -916,7 +918,8 @@ class EcAndFileCombine {
        |    ${if (onlyHandleOneLevelPartition) "and " + jobType.numPartitions + " <= 1" else " "}
        |    ${if (!targetTableToEcOrCombine.equals("")) " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
        |    ${if (enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) " and split_flow_status = 1" else " "}
-       |    ${if (enableFileSizeOrder) "order by file_size " + handleFileSizeOrder else " "}
+       |    ${if (enableFileCountOrder) "order by file_count_old " + handleFileSizeOrder else " "}
+       |    ${if (!enableFileCountOrder && enableFileSizeOrder) "order by file_size " + handleFileSizeOrder else " "}
        |    limit ${targetBatchSize}) t
        |""".stripMargin
 
