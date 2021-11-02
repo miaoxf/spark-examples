@@ -944,13 +944,20 @@ class EcAndFileCombine {
 
     if (!onlineTestMode) {
 
-      val updateSql =
-        s"""
-           |update ${targetMysqlTable} set ${jobType.mysqlStatus} = 1 where id in (${ids}) and ${jobType.mysqlStatus} = 0;
-           |""".stripMargin
-      if (MysqlSingleConn.updateQuery(updateSql) <= 0) {
-        InnerLogger.error(InnerLogger.ENCAP_MOD, s"update ${jobType.mysqlStatus} to 1 failed! [sql: ${updateSql}]")
-        sys.exit(1)
+      try {
+        val updateSql =
+          s"""
+             |update ${targetMysqlTable} set ${jobType.mysqlStatus} = 1 where id in (${ids}) and ${jobType.mysqlStatus} = 0;
+             |""".stripMargin
+        if (MysqlSingleConn.updateQuery(updateSql) <= 0) {
+          InnerLogger.error(InnerLogger.ENCAP_MOD, s"update ${jobType.mysqlStatus} to 1 failed! [sql: ${updateSql}]")
+          sys.exit(1)
+        }
+
+      } catch {
+        case e: Exception =>
+          // updata失败，尝试重新获取数据源
+          return true
       }
     }
 
