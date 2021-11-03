@@ -354,6 +354,7 @@ object EcAndFileCombine {
   var submitSparkShell: Boolean = _
   var testMode: Boolean = false
   val sdf = new SimpleDateFormat("yyyyMMdd")
+  var splitFlowLevel: Int = 1
 
   //  ExtClasspathLoader.loadClasspath(new File(
   //    "/home/vipshop/platform/spark-3.0.1/jars/spark-sql_2.12-3.0.1-SNAPSHOT.jar"))
@@ -555,9 +556,10 @@ object EcAndFileCombine {
     onlyCoalesce = if (args.size > 17) args(17).toBoolean else false
     enableHandleBucketTable = if (args.size > 18) args(18).toBoolean else false
     enableFileCountOrder = if (args.size > 19) args(19).toBoolean else true
-    enableOrcDumpWithSpark = if (args.size > 20) args(20).toBoolean else false
-    fileCombineThreshold = if (args.size > 21) args(21).toLong else 104857600
-    submitSparkShell = if (args.size > 22) args(22).toBoolean else true
+    splitFlowLevel = if (args.size > 20) args(20).toInt else 1
+    enableOrcDumpWithSpark = if (args.size > 21) args(21).toBoolean else false
+    fileCombineThreshold = if (args.size > 22) args(22).toLong else 104857600
+    submitSparkShell = if (args.size > 23) args(23).toBoolean else true
   }
 
   def main(args: Array[String]): Unit = {
@@ -918,7 +920,7 @@ class EcAndFileCombine {
        |    where ${jobType.mysqlStatus} = 0
        |    ${if (onlyHandleOneLevelPartition) "and " + jobType.numPartitions + " <= 1" else " "}
        |    ${if (!targetTableToEcOrCombine.equals("")) " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
-       |    ${if (enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) " and (split_flow_status = 1 or split_flow_status < 0) " else " "}
+       |    ${if (enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "}
        |    ${if (enableFileCountOrder) "order by split_flow_status " else " "}
        |    ${if (!enableFileCountOrder && enableFileSizeOrder) "order by file_size " + handleFileSizeOrder else " "}
        |    limit ${targetBatchSize}) t
@@ -973,7 +975,7 @@ class EcAndFileCombine {
        |select id,db_name,tbl_name,location,first_partition,${jobType.mysqlStatus},path_cluster,dt,file_size
        |    from ${targetMysqlTable} where ${if (!onlineTestMode) jobType.mysqlStatus + " = 1 and " else " "} id in (${ids})
        |    ${if (!targetTableToEcOrCombine.equals("")) " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
-       |    ${if (enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) " and (split_flow_status = 1 or split_flow_status < 0) " else " and split_flow_status <> -1"};
+       |    ${if (enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "};
        |""".stripMargin
     InnerLogger.debug(InnerLogger.ENCAP_MOD, s"sql to get datasource: ${getDatasourceSql}")
     val rs = MysqlSingleConn.executeQuery(getDatasourceSql)
