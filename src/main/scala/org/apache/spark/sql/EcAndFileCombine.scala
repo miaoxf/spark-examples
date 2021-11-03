@@ -588,6 +588,7 @@ class EcAndFileCombine {
   val idToRollBackCmd = new ConcurrentHashMap[String, String]()
   var records = new mutable.HashMap[Int, Record]()
   var jobIdToJobStatus = new ConcurrentHashMap[String, java.util.HashMap[String, String]]()
+  var circTimes = 1
   // 无法避免kill -9
   val shutdownHook = new Thread(new Runnable {
     override def run(): Unit = {
@@ -943,9 +944,9 @@ class EcAndFileCombine {
     }
 
     if (!onlineTestMode) {
-
+      var updateSql = ""
       try {
-        val updateSql =
+        updateSql =
           s"""
              |update ${targetMysqlTable} set ${jobType.mysqlStatus} = 1 where id in (${ids}) and ${jobType.mysqlStatus} = 0;
              |""".stripMargin
@@ -957,6 +958,8 @@ class EcAndFileCombine {
       } catch {
         case e: Exception =>
           // updata失败，尝试重新获取数据源
+          InnerLogger.warn(InnerLogger.ENCAP_MOD, s"execute updateSql[${updateSql}] failed," +
+            s" and continue retrying getting datasource for more [${10 - circTimes}] times!")
           return true
       }
     }
@@ -1076,9 +1079,10 @@ class EcAndFileCombine {
 
     val pool: ThreadPoolExecutor = new ThreadPoolExecutor(batchSize, batchSize, 0L,
       TimeUnit.MILLISECONDS, new LinkedBlockingQueue[Runnable])
-    var circTimes = 0
-    while (curJobs.size() < batchSize && circTimes < 10
+    while (curJobs.size() < batchSize && circTimes <= 10
       && encapsulateTargetSizeWork(batchSize - curJobs.size(), pool)) {
+      InnerLogger.info(InnerLogger.ENCAP_MOD, s"continue retrying getting datasource" +
+        s" for more [${10 - circTimes}] times!")
       circTimes += 1
       // todo 如果这样，targetSize越来越小，查询的次数越来越多
     }
