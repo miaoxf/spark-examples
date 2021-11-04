@@ -976,7 +976,10 @@ class EcAndFileCombine {
              |""".stripMargin
         if (MysqlSingleConn.updateQuery(updateSql) <= 0) {
           InnerLogger.error(InnerLogger.ENCAP_MOD, s"update ${jobType.mysqlStatus} to 1 failed! [sql: ${updateSql}]")
-          sys.exit(1)
+          // sys.exit(1)
+          InnerLogger.warn(InnerLogger.ENCAP_MOD, s"execute updateSql[${updateSql}] failed," +
+            s" and continue retrying getting datasource for more [${10 - circTimes}] times!")
+          return true
         }
 
       } catch {
