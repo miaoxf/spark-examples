@@ -17,7 +17,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
 import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
 import org.apache.spark.sql.JobType.{JobType, MID_DT_LOCATION, Record}
-import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, INIT_CODE, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, defaultMySQLConfig}
+import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, INIT_CODE, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, SUCCESS_FILE_MISSING, defaultMySQLConfig}
 import org.apache.spark.sql.catalyst.QueryPlanningTracker
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAlias, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{Ascending, SortOrder}
@@ -232,6 +232,7 @@ object MysqlSingleConn {
   val SKIP_WORK = 4
   val ORC_DUMP_FAILED = 5
   val PROCESS_KILLED = 6
+  val SUCCESS_FILE_MISSING = 7
   val SOURCE_IN_SOURCE_DIR = 10
   val SOURCE_IN_TEMPORARY_DIR = 11
   val DATA_IN_DEST_DIR = 12
@@ -753,7 +754,7 @@ class EcAndFileCombine {
         deleteFileIfExist(record.get(MID_DT_LOCATION))
         InnerLogger.info(InnerLogger.CHECK_MOD,
           s"success file 不存在,midDTLocation[${record.get(MID_DT_LOCATION)}] 成功地被删除或者本就不存在!")
-        MysqlSingleConn.updateStatus(jobType.mysqlStatus, 3, record.get(MYSQL_ID).toInt)
+        MysqlSingleConn.updateStatus(jobType.mysqlStatus, SUCCESS_FILE_MISSING, record.get(MYSQL_ID).toInt)
         // todo 类似的return需要加上
         return
       }
