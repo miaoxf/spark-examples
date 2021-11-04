@@ -602,6 +602,7 @@ class EcAndFileCombine {
   var curJobs = new ConcurrentHashMap[String, String]()
   val idToFlag = new ConcurrentHashMap[String, Int]()
   val idToRollBackCmd = new ConcurrentHashMap[String, String]()
+  // 记录了已经status设置为1的这些record,shutdownHook中可以根据这个map更新status
   var records = new mutable.HashMap[Int, Record]()
   var jobIdToJobStatus = new ConcurrentHashMap[String, java.util.HashMap[String, String]]()
   var circTimes = 1
@@ -643,18 +644,19 @@ class EcAndFileCombine {
       })
 
       MysqlSingleConn.init()
-      val ids: stream.Stream[Int] = curJobs.entrySet().stream().map(_.getKey.toInt)
-      import scala.collection.JavaConverters._
+      var ids: Array[Int] = null
       currentStep match {
         case JobType.encapsulateWork =>
           // 更新mysql状态，设置status=0
-          MysqlSingleConn.batchUpdateStatus(jobType.mysqlStatus, INIT_CODE,
-            ids.collect(Collectors.toList[Int]).asScala.toArray)
+          // 这边获取records中的mysql记录，而不是curJobs,因为
+          // records中的记录一旦封装好，就可以保证退出时status回归为0
+          ids = records.map(_._1.toInt).toArray
+          MysqlSingleConn.batchUpdateStatus(jobType.mysqlStatus, INIT_CODE, ids)
         case _ =>
           // 更新mysql状态，设置status=6
-          MysqlSingleConn.batchUpdateStatus(jobType.mysqlStatus, PROCESS_KILLED,
-            ids.collect(Collectors.toList[Int]).asScala.toArray)
-
+          import scala.collection.JavaConverters._
+          ids = curJobs.entrySet().stream().map(_.getKey.toInt).collect(Collectors.toList[Int]).asScala.toArray
+          MysqlSingleConn.batchUpdateStatus(jobType.mysqlStatus, PROCESS_KILLED, ids)
       }
       MysqlSingleConn.close()
     }
