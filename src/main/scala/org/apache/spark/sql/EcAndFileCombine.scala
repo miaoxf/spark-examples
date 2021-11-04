@@ -17,7 +17,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
 import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
 import org.apache.spark.sql.JobType.{JobType, MID_DT_LOCATION, Record}
-import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, defaultMySQLConfig}
+import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, INIT_CODE, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, defaultMySQLConfig}
 import org.apache.spark.sql.catalyst.QueryPlanningTracker
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAlias, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{Ascending, SortOrder}
@@ -77,6 +77,18 @@ object JobType extends Enumeration {
   val APPLICATION_ID = "applicationId"
   val ENABLE_SPLIT_FLOW = "enableSplitFlow"
   val PARTITION_SQL = "partitionSql"
+
+  abstract class JobStep extends Value {
+  }
+  val encapsulateWork = new JobStep {
+    override def id: Int = 0
+  }
+  val scheduleWork = new JobStep {
+    override def id: Int = 1
+  }
+  val checkWork = new JobStep {
+    override def id: Int = 2
+  }
 
   abstract class InnerValue extends Value {
     val mysqlStatus: String = ""
@@ -214,6 +226,7 @@ object InnerLogger {
 object MysqlSingleConn {
   var defaultMySQLConfig: List[String] = List("10.208.30.215", "3306", "demeter",
     "demeter", "e12c3fYoJv2VyxPT")
+  val INIT_CODE = 0
   val SUCCESS_CODE = 2
   val CMD_EXECUTE_FAILED = 3
   val SKIP_WORK = 4
@@ -591,6 +604,7 @@ class EcAndFileCombine {
   var records = new mutable.HashMap[Int, Record]()
   var jobIdToJobStatus = new ConcurrentHashMap[String, java.util.HashMap[String, String]]()
   var circTimes = 1
+  var currentStep: JobType.JobStep = JobType.encapsulateWork
   // 无法避免kill -9
   val shutdownHook = new Thread(new Runnable {
     override def run(): Unit = {
@@ -627,12 +641,20 @@ class EcAndFileCombine {
         }
       })
 
-      // 更新mysql状态，设置status=6
       MysqlSingleConn.init()
       val ids: stream.Stream[Int] = curJobs.entrySet().stream().map(_.getKey.toInt)
       import scala.collection.JavaConverters._
-      MysqlSingleConn.batchUpdateStatus(jobType.mysqlStatus, PROCESS_KILLED,
-        ids.collect(Collectors.toList[Int]).asScala.toArray)
+      currentStep match {
+        case JobType.encapsulateWork =>
+          // 更新mysql状态，设置status=0
+          MysqlSingleConn.batchUpdateStatus(jobType.mysqlStatus, INIT_CODE,
+            ids.collect(Collectors.toList[Int]).asScala.toArray)
+        case _ =>
+          // 更新mysql状态，设置status=6
+          MysqlSingleConn.batchUpdateStatus(jobType.mysqlStatus, PROCESS_KILLED,
+            ids.collect(Collectors.toList[Int]).asScala.toArray)
+
+      }
       MysqlSingleConn.close()
     }
   })
@@ -1651,6 +1673,7 @@ class EcAndFileCombine {
   /** submit work of ec or file_combine to spark */
   def scheduleWork(): Unit = {
     /** step3: acquire resource dynamically | start *******************************************************************/
+    currentStep = JobType.scheduleWork
     if (curJobs.size() == 0) {
       return
     }
@@ -1696,6 +1719,7 @@ class EcAndFileCombine {
   /** check write of spark and change directory */
   def checkWork(): Unit = {
     /** step5: check spark-application | start ************************************************************************/
+    currentStep = JobType.checkWork
     if (curJobs.size() == 0) {
       return
     }
