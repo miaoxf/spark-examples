@@ -1517,7 +1517,8 @@ class EcAndFileCombine {
             if (s"hdfs dfs -test -e ${fineGrainedLocation}".! != 0) return
             val totalSize = s"hdfs dfs -count ${fineGrainedLocation}".!!
               .split(" ").filter(!_.equals(""))(2).stripMargin
-            val parallelism: Long = totalSize.toLong / maxPartitionBytes.toLong
+            var parallelism: Long = totalSize.toLong / maxPartitionBytes.toLong
+            if (parallelism <= 0) parallelism = 1
             InnerLogger.debug(InnerLogger.SPARK_MOD, "get size of fineGrainedLocation: " +
               s"${fineGrainedLocation},totalSize:${totalSize},maxPartitionBytes:${maxPartitionBytes}," +
               s"parallelism:${parallelism}")
