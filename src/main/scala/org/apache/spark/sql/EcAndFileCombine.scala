@@ -1278,6 +1278,7 @@ class EcAndFileCombine {
       InnerLogger.debug(InnerLogger.SPARK_MOD, s"start to runSingleCombineWork...value[${value}]")
 
       val schemaMap = mapper.readValue(value, classOf[java.util.HashMap[String, String]])
+      val mysqlId = schemaMap.get(MYSQL_ID)
       val combineId = schemaMap.get(JOB_ID)
       val initFileNums = schemaMap.get(INIT_FILE_NUMS).toLong
       val srcTbl = schemaMap.get(DB_NAME) + "." + schemaMap.get(TBL_NAME)
@@ -1325,12 +1326,16 @@ class EcAndFileCombine {
       df.createOrReplaceTempView(tempViewName)
 
       InnerLogger.debug(InnerLogger.SPARK_MOD, "start to count source table...")
-      val countSrc: Long = Try { spark.sql(countSourceSql).collect().apply(0).get(0).toString.toLong } match {
-        case Failure(exception) => {
-          throw exception
-          0L
-        }
-        case Success(c) => c
+      val countSrc: Long = try { spark.sql(countSourceSql).collect().apply(0).get(0).toString.toLong } catch {
+        case e: org.apache.orc.FileFormatException =>
+          // orc file damaged
+          // todo 更新mysql
+          MysqlSingleConn.init()
+          MysqlSingleConn.updateStatus(jobType.mysqlStatus, ORC_DUMP_FAILED, mysqlId.toInt)
+          MysqlSingleConn.close()
+          throw e
+        case e =>
+          throw e
       }
 
       InnerLogger.debug(InnerLogger.SPARK_MOD, "start to alter table to set location of mid table...")
@@ -1509,6 +1514,7 @@ class EcAndFileCombine {
             // 设置maxSplitBytes
             // spark.conf.set("spark.sql.files.maxPartitionBytes", maxPartitionBytes)
             val fineGrainedLocation = sourceTblLocation.stripSuffix("/") + "/" + location2Sql._1
+            if (s"hdfs dfs -test -e ${fineGrainedLocation}".! != 0) return
             val totalSize = s"hdfs dfs -count ${fineGrainedLocation}".!!
               .split(" ").filter(!_.equals(""))(2).stripMargin
             val parallelism: Long = totalSize.toLong / maxPartitionBytes.toLong
