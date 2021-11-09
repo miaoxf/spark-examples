@@ -1515,22 +1515,22 @@ class EcAndFileCombine {
             // 设置maxSplitBytes
             // spark.conf.set("spark.sql.files.maxPartitionBytes", maxPartitionBytes)
             val fineGrainedLocation = sourceTblLocation.stripSuffix("/") + "/" + location2Sql._1
-            if (s"hdfs dfs -test -e ${fineGrainedLocation}".! != 0) return
-            val totalSize = s"hdfs dfs -count ${fineGrainedLocation}".!!
-              .split(" ").filter(!_.equals(""))(2).stripMargin
-            var parallelism: Long = totalSize.toLong / maxPartitionBytes.toLong
-            if (parallelism <= 0) parallelism = 1
-            InnerLogger.debug(InnerLogger.SPARK_MOD, "get size of fineGrainedLocation: " +
-              s"${fineGrainedLocation},totalSize:${totalSize},maxPartitionBytes:${maxPartitionBytes}," +
-              s"parallelism:${parallelism}")
-            if (parallelism > 0) {
-              insertSql = s"insert overwrite table " + dbName + "." + midTblName +
-                s" partition (${location2Sql._3}) " +
-                s"select /*+ repartition(${parallelism}) */ * from " + tempViewName
-              InnerLogger.debug(InnerLogger.SPARK_MOD, "start to execute insertion with static" +
-                s"partition: ${insertSql}")
-              spark.sql(insertSql)
-
+            if (s"hdfs dfs -test -e ${fineGrainedLocation}".! == 0) {
+              val totalSize = s"hdfs dfs -count ${fineGrainedLocation}".!!
+                .split(" ").filter(!_.equals(""))(2).stripMargin
+              var parallelism: Long = totalSize.toLong / maxPartitionBytes.toLong
+              if (parallelism <= 0) parallelism = 1
+              InnerLogger.debug(InnerLogger.SPARK_MOD, "get size of fineGrainedLocation: " +
+                s"${fineGrainedLocation},totalSize:${totalSize},maxPartitionBytes:${maxPartitionBytes}," +
+                s"parallelism:${parallelism}")
+              if (parallelism > 0) {
+                insertSql = s"insert overwrite table " + dbName + "." + midTblName +
+                  s" partition (${location2Sql._3}) " +
+                  s"select /*+ repartition(${parallelism}) */ * from " + tempViewName
+                InnerLogger.debug(InnerLogger.SPARK_MOD, "start to execute insertion with static" +
+                  s"partition: ${insertSql}")
+                spark.sql(insertSql)
+              }
             }
           })
 
