@@ -655,7 +655,8 @@ class EcAndFileCombine {
         case _ =>
           // 更新mysql状态，设置status=6
           import scala.collection.JavaConverters._
-          ids = curJobs.entrySet().stream().map(_.getKey.toInt).collect(Collectors.toList[Int]).asScala.toArray
+          val stream: java.util.stream.Stream[Int] = curJobs.entrySet().stream().map(_.getKey.toInt)
+          ids = stream.collect(Collectors.toList[Int]).asScala.toArray
           MysqlSingleConn.batchUpdateStatus(jobType.mysqlStatus, PROCESS_KILLED, ids)
       }
       MysqlSingleConn.close()
