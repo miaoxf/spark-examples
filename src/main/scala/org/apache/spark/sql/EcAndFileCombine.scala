@@ -1516,6 +1516,7 @@ class EcAndFileCombine {
             // spark.conf.set("spark.sql.files.maxPartitionBytes", maxPartitionBytes)
             val fineGrainedLocation = sourceTblLocation.stripSuffix("/") + "/" + location2Sql._1
             if (s"hdfs dfs -test -e ${fineGrainedLocation}".! == 0) {
+              InnerLogger.debug(InnerLogger.SPARK_MOD, s"start to run fineGrainedLocation[${fineGrainedLocation}]...")
               val totalSize = s"hdfs dfs -count ${fineGrainedLocation}".!!
                 .split(" ").filter(!_.equals(""))(2).stripMargin
               var parallelism: Long = totalSize.toLong / maxPartitionBytes.toLong
@@ -1529,8 +1530,22 @@ class EcAndFileCombine {
                   s"select /*+ repartition(${parallelism}) */ * from " + tempViewName
                 InnerLogger.debug(InnerLogger.SPARK_MOD, "start to execute insertion with static" +
                   s"partition: ${insertSql}")
-                spark.sql(insertSql)
+                var res = true
+                try {
+                  spark.sql(insertSql)
+                } catch {
+                  case ex: Exception =>
+                    val msg = if (ex.getCause == null) ex.getMessage + "\n" + ex.getStackTrace.mkString("\n")
+                    else ex.getMessage + "\n" + ex.getStackTrace.mkString("\n") + "\n" + ex.getCause.toString
+                    InnerLogger.error(InnerLogger.SPARK_MOD, s"insert sql[sql:${insertSql},fineGrainedLocation:" +
+                      s"${fineGrainedLocation}] executed failed:\n${msg}")
+                    res = false
+                }
+                if (res) InnerLogger.info(InnerLogger.SPARK_MOD, s"execute insertion [${insertSql}] successfully," +
+                  s"location[${fineGrainedLocation}]")
               }
+            } else {
+              InnerLogger.warn(InnerLogger.SPARK_MOD, s"fineGrainedLocation[${fineGrainedLocation}] did not exist!")
             }
           })
 
