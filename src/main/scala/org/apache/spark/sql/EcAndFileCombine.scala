@@ -17,7 +17,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
 import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
 import org.apache.spark.sql.JobType.{JobType, MID_DT_LOCATION, Record}
-import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, defaultMySQLConfig}
+import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, INIT_CODE, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, SUCCESS_FILE_MISSING, defaultMySQLConfig}
 import org.apache.spark.sql.catalyst.QueryPlanningTracker
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAlias, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{Ascending, SortOrder}
@@ -77,6 +77,18 @@ object JobType extends Enumeration {
   val APPLICATION_ID = "applicationId"
   val ENABLE_SPLIT_FLOW = "enableSplitFlow"
   val PARTITION_SQL = "partitionSql"
+
+  abstract class JobStep extends Value {
+  }
+  val encapsulateWork = new JobStep {
+    override def id: Int = 0
+  }
+  val scheduleWork = new JobStep {
+    override def id: Int = 1
+  }
+  val checkWork = new JobStep {
+    override def id: Int = 2
+  }
 
   abstract class InnerValue extends Value {
     val mysqlStatus: String = ""
@@ -214,11 +226,13 @@ object InnerLogger {
 object MysqlSingleConn {
   var defaultMySQLConfig: List[String] = List("10.208.30.215", "3306", "demeter",
     "demeter", "e12c3fYoJv2VyxPT")
+  val INIT_CODE = 0
   val SUCCESS_CODE = 2
   val CMD_EXECUTE_FAILED = 3
   val SKIP_WORK = 4
   val ORC_DUMP_FAILED = 5
   val PROCESS_KILLED = 6
+  val SUCCESS_FILE_MISSING = 7
   val SOURCE_IN_SOURCE_DIR = 10
   val SOURCE_IN_TEMPORARY_DIR = 11
   val DATA_IN_DEST_DIR = 12
@@ -588,9 +602,11 @@ class EcAndFileCombine {
   var curJobs = new ConcurrentHashMap[String, String]()
   val idToFlag = new ConcurrentHashMap[String, Int]()
   val idToRollBackCmd = new ConcurrentHashMap[String, String]()
+  // 记录了已经status设置为1的这些record,shutdownHook中可以根据这个map更新status
   var records = new mutable.HashMap[Int, Record]()
   var jobIdToJobStatus = new ConcurrentHashMap[String, java.util.HashMap[String, String]]()
   var circTimes = 1
+  var currentStep: JobType.JobStep = JobType.encapsulateWork
   // 无法避免kill -9
   val shutdownHook = new Thread(new Runnable {
     override def run(): Unit = {
@@ -627,12 +643,22 @@ class EcAndFileCombine {
         }
       })
 
-      // 更新mysql状态，设置status=6
       MysqlSingleConn.init()
-      val ids: stream.Stream[Int] = curJobs.entrySet().stream().map(_.getKey.toInt)
-      import scala.collection.JavaConverters._
-      MysqlSingleConn.batchUpdateStatus(jobType.mysqlStatus, PROCESS_KILLED,
-        ids.collect(Collectors.toList[Int]).asScala.toArray)
+      var ids: Array[Int] = null
+      currentStep match {
+        case JobType.encapsulateWork =>
+          // 更新mysql状态，设置status=0
+          // 这边获取records中的mysql记录，而不是curJobs,因为
+          // records中的记录一旦封装好，就可以保证退出时status回归为0
+          ids = records.map(_._1.toInt).toArray
+          MysqlSingleConn.batchUpdateStatus(jobType.mysqlStatus, INIT_CODE, ids)
+        case _ =>
+          // 更新mysql状态，设置status=6
+          import scala.collection.JavaConverters._
+          val stream: java.util.stream.Stream[Int] = curJobs.entrySet().stream().map(_.getKey.toInt)
+          ids = stream.collect(Collectors.toList[Int]).asScala.toArray
+          MysqlSingleConn.batchUpdateStatus(jobType.mysqlStatus, PROCESS_KILLED, ids)
+      }
       MysqlSingleConn.close()
     }
   })
@@ -731,7 +757,7 @@ class EcAndFileCombine {
         deleteFileIfExist(record.get(MID_DT_LOCATION))
         InnerLogger.info(InnerLogger.CHECK_MOD,
           s"success file 不存在,midDTLocation[${record.get(MID_DT_LOCATION)}] 成功地被删除或者本就不存在!")
-        MysqlSingleConn.updateStatus(jobType.mysqlStatus, 3, record.get(MYSQL_ID).toInt)
+        MysqlSingleConn.updateStatus(jobType.mysqlStatus, SUCCESS_FILE_MISSING, record.get(MYSQL_ID).toInt)
         // todo 类似的return需要加上
         return
       }
@@ -1253,6 +1279,7 @@ class EcAndFileCombine {
       InnerLogger.debug(InnerLogger.SPARK_MOD, s"start to runSingleCombineWork...value[${value}]")
 
       val schemaMap = mapper.readValue(value, classOf[java.util.HashMap[String, String]])
+      val mysqlId = schemaMap.get(MYSQL_ID)
       val combineId = schemaMap.get(JOB_ID)
       val initFileNums = schemaMap.get(INIT_FILE_NUMS).toLong
       val srcTbl = schemaMap.get(DB_NAME) + "." + schemaMap.get(TBL_NAME)
@@ -1300,12 +1327,16 @@ class EcAndFileCombine {
       df.createOrReplaceTempView(tempViewName)
 
       InnerLogger.debug(InnerLogger.SPARK_MOD, "start to count source table...")
-      val countSrc: Long = Try { spark.sql(countSourceSql).collect().apply(0).get(0).toString.toLong } match {
-        case Failure(exception) => {
-          throw exception
-          0L
-        }
-        case Success(c) => c
+      val countSrc: Long = try { spark.sql(countSourceSql).collect().apply(0).get(0).toString.toLong } catch {
+        case e: org.apache.orc.FileFormatException =>
+          // orc file damaged
+          // todo 更新mysql
+          MysqlSingleConn.init()
+          MysqlSingleConn.updateStatus(jobType.mysqlStatus, ORC_DUMP_FAILED, mysqlId.toInt)
+          MysqlSingleConn.close()
+          throw e
+        case e =>
+          throw e
       }
 
       InnerLogger.debug(InnerLogger.SPARK_MOD, "start to alter table to set location of mid table...")
@@ -1484,20 +1515,37 @@ class EcAndFileCombine {
             // 设置maxSplitBytes
             // spark.conf.set("spark.sql.files.maxPartitionBytes", maxPartitionBytes)
             val fineGrainedLocation = sourceTblLocation.stripSuffix("/") + "/" + location2Sql._1
-            val totalSize = s"hdfs dfs -count ${fineGrainedLocation}".!!
-              .split(" ").filter(!_.equals(""))(2).stripMargin
-            val parallelism: Long = totalSize.toLong / maxPartitionBytes.toLong
-            InnerLogger.debug(InnerLogger.SPARK_MOD, "get size of fineGrainedLocation: " +
-              s"${fineGrainedLocation},totalSize:${totalSize},maxPartitionBytes:${maxPartitionBytes}," +
-              s"parallelism:${parallelism}")
-            if (parallelism > 0) {
-              insertSql = s"insert overwrite table " + dbName + "." + midTblName +
-                s" partition (${location2Sql._3}) " +
-                s"select /*+ repartition(${parallelism}) */ * from " + tempViewName
-              InnerLogger.debug(InnerLogger.SPARK_MOD, "start to execute insertion with static" +
-                s"partition: ${insertSql}")
-              spark.sql(insertSql)
-
+            if (s"hdfs dfs -test -e ${fineGrainedLocation}".! == 0) {
+              InnerLogger.debug(InnerLogger.SPARK_MOD, s"start to run fineGrainedLocation[${fineGrainedLocation}]...")
+              val totalSize = s"hdfs dfs -count ${fineGrainedLocation}".!!
+                .split(" ").filter(!_.equals(""))(2).stripMargin
+              var parallelism: Long = totalSize.toLong / maxPartitionBytes.toLong
+              if (parallelism <= 0) parallelism = 1
+              InnerLogger.debug(InnerLogger.SPARK_MOD, "get size of fineGrainedLocation: " +
+                s"${fineGrainedLocation},totalSize:${totalSize},maxPartitionBytes:${maxPartitionBytes}," +
+                s"parallelism:${parallelism}")
+              if (parallelism > 0) {
+                insertSql = s"insert overwrite table " + dbName + "." + midTblName +
+                  s" partition (${location2Sql._3}) " +
+                  s"select /*+ repartition(${parallelism}) */ * from " + tempViewName
+                InnerLogger.debug(InnerLogger.SPARK_MOD, "start to execute insertion with static" +
+                  s"partition: ${insertSql}")
+                var res = true
+                try {
+                  spark.sql(insertSql)
+                } catch {
+                  case ex: Exception =>
+                    val msg = if (ex.getCause == null) ex.getMessage + "\n" + ex.getStackTrace.mkString("\n")
+                    else ex.getMessage + "\n" + ex.getStackTrace.mkString("\n") + "\n" + ex.getCause.toString
+                    InnerLogger.error(InnerLogger.SPARK_MOD, s"insert sql[sql:${insertSql},fineGrainedLocation:" +
+                      s"${fineGrainedLocation}] executed failed:\n${msg}")
+                    res = false
+                }
+                if (res) InnerLogger.info(InnerLogger.SPARK_MOD, s"execute insertion [${insertSql}] successfully," +
+                  s"location[${fineGrainedLocation}]")
+              }
+            } else {
+              InnerLogger.warn(InnerLogger.SPARK_MOD, s"fineGrainedLocation[${fineGrainedLocation}] did not exist!")
             }
           })
 
@@ -1654,6 +1702,7 @@ class EcAndFileCombine {
   /** submit work of ec or file_combine to spark */
   def scheduleWork(): Unit = {
     /** step3: acquire resource dynamically | start *******************************************************************/
+    currentStep = JobType.scheduleWork
     if (curJobs.size() == 0) {
       return
     }
@@ -1699,6 +1748,7 @@ class EcAndFileCombine {
   /** check write of spark and change directory */
   def checkWork(): Unit = {
     /** step5: check spark-application | start ************************************************************************/
+    currentStep = JobType.checkWork
     if (curJobs.size() == 0) {
       return
     }
