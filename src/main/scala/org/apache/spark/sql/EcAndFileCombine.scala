@@ -1312,6 +1312,7 @@ class EcAndFileCombine {
       val showTblLikeMidTblSql = "show tables in " + dbName + " like '" + midTblName + "' "
       val createMidTblSql = "create table IF NOT EXISTS " + dbName + "." + midTblName + " like " + srcTbl
       val alterTblLocation = "alter table " + dbName + "." + midTblName + " set LOCATION  '" +midTblLocation + "' "
+      val dropFirstPartitionLocation = "alter table " + dbName + "." + midTblName + " drop partition (" + firstPartition + ")"
       val showPartitionOfSrcTblSql = "show partitions " + srcTbl
       // val partitionsInInsertSql = getPartitionsInInsertSql(getPartitionSql(partitionStr, fieldOfStaticPartition), partitionPredicate)
       val showCreateSrcTblSql = s"show create table " + srcTbl
@@ -1364,6 +1365,16 @@ class EcAndFileCombine {
           throw exception
         }
         case _ =>
+      }
+
+      // drop partition location metadata, to avoid wrongFS when inserting data to mid-table,however,with count-check
+      // succeeded by mistake,cus counting both records in bip05 and bip06
+      try {
+        InnerLogger.debug(InnerLogger.SPARK_MOD, s"start to drop partition of mid-table, ${dropFirstPartitionLocation}")
+        spark.sql(dropFirstPartitionLocation)
+      } catch {
+        case e: Exception =>
+          // such as ERROR [main] FileUtils: Failed to delete hdfs://...
       }
 
       InnerLogger.debug(InnerLogger.SPARK_MOD, "start to get insert sql...")
