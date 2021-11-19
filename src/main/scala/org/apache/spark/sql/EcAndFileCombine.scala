@@ -806,6 +806,8 @@ class EcAndFileCombine {
       val moveSourceCmd = s"hdfs dfs -mv ${successSchema.get(LOCATION)}" +
         s" ${toBeDelLocation}"
       val mkdirCmd = s"hdfs dfs -mkdir -p ${toBeDelLocation}"
+      // drop mid
+      val dropmidtbl = s"drop table if exists ${record.get(DB_NAME)}.${successSchema.get(MID_TBL_NAME)}"
       InnerLogger.info(InnerLogger.CHECK_MOD, s"mkdir toBeDelLocation dir: ${mkdirCmd}")
       mkdirCmd.!
       InnerLogger.info(InnerLogger.CHECK_MOD, s"move source location to to_be_deleted dir: ${moveSourceCmd}")
@@ -914,6 +916,15 @@ class EcAndFileCombine {
       // 保证该命令后，没有 mysql或者hdfs的修改操作
       s"hdfs dfs -mkdir -p ${boundToBeDelLocation}".!
       runCmd(renameTempToDelDirCmd, mysqlId, InnerLogger.CHECK_MOD)
+
+      // drop midtbl
+      try {
+        InnerLogger.debug(InnerLogger.CHECK_MOD, s"start to drop mid table [${dropmidtbl}]")
+        spark.sql(dropmidtbl)
+      } catch {
+        case e: Exception =>
+          InnerLogger.warn(InnerLogger.CHECK_MOD, s"drop mid table failed![${dropmidtbl}]")
+      }
 
       // 更新status为mysql中的最新值。
       val rs = MysqlSingleConn.executeQuery(s"select ${jobType.mysqlStatus} from " +
@@ -1032,10 +1043,13 @@ class EcAndFileCombine {
         && !initCluster.equals(record.cluster)) {
         record.cluster = initCluster
       }
-
-      record.midTblName = record.tblName + "___ec_or_combine_mid__"
+      // 获取一级分区value
+      val partvalue = record.firstPartition.split("=")(1)
+      // 修改中间表名
+      record.midTblName = record.tblName + "___ec_or_combine_mid__" + partvalue
+      // 修改中间表location
       record.midTblLocation = s"hdfs://${record.cluster}/backup/mid_tbl_to_check/" +
-        s"${record.dbName}/${record.tblName}"
+        s"${record.dbName}/${record.tblName}"+partvalue
       record.midDTLocation = s"${record.midTblLocation}/${record.firstPartition}"
       // 这部分数据可能会有回滚的需求
       record.toBeDelLocation = s"hdfs://${initCluster}/backup/mid_tbl_to_be_deleted/__temporary/" +
