@@ -1172,13 +1172,10 @@ class EcAndFileCombine {
       conf.set("spark.master", "local[1]")
         .setAppName(sparkApplicationName)
     } else {
-      val jars = new java.util.ArrayList[String]()
-      loadJars(new File(sparkHomePath.stripSuffix("/") + "/jars"), jars)
-      import scala.collection.JavaConverters._
       conf.set("spark.master", "yarn")
         .set("spark.submit.deployMode", "client")
         .set("queue", yarnQueue)
-        .set("spark.driver.memory", "6G")
+        .set("spark.driver.memory", "8G")
         .set("spark.executor.cores", maxCores.toString)
         .set("spark.executor.memory", maxMem + "G")
         .set("spark.hadoop.hive.exec.dynamic.partition", "true")
@@ -1188,7 +1185,6 @@ class EcAndFileCombine {
         // todo delete
         .set("SPARK_CONF_DIR", "/home/vipshop/conf/spark3_0")
         .setAppName(sparkApplicationName)
-        .setJars(jars.asScala)
     }
 
     val builder = SparkSession.builder().config(conf)
@@ -1574,7 +1570,7 @@ class EcAndFileCombine {
             }
           })
 
-          spark.conf.set("spark.sql.sources.partitionOverwriteMode", PartitionOverwriteMode.STATIC.toString)
+          // spark.conf.set("spark.sql.sources.partitionOverwriteMode", PartitionOverwriteMode.STATIC.toString)
 
         } else if (!repartitionByBucketOrPartition) {
           InnerLogger.info(InnerLogger.SPARK_MOD, s"start to execute insertion: spark.sql(${insertSql})")
