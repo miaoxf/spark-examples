@@ -113,9 +113,9 @@
 
     <!-- https://mvnrepository.com/artifact/org.apache.spark/spark-sql -->
     <dependency>
-      <groupId>org.apache.spark</groupId>
+      <groupId>com.vip.spark</groupId>
       <artifactId>spark-sql_2.12</artifactId>
-      <version>3.0.1</version>
+      <version>3.0.1-SNAPSHOT</version>
 <!--
       <scope>provided</scope>
 -->
@@ -123,16 +123,10 @@
 
     <!-- https://mvnrepository.com/artifact/org.apache.spark/spark-core -->
     <dependency>
-      <groupId>org.apache.spark</groupId>
+      <groupId>com.vip.spark</groupId>
       <artifactId>spark-core_2.12</artifactId>
-      <version>3.0.1</version>
+      <version>3.0.1-SNAPSHOT</version>
       <!--<scope>provided</scope>-->
-    </dependency>
-
-    <dependency>
-      <groupId>org.apache.hudi</groupId>
-      <artifactId>hudi-spark3-bundle_2.12</artifactId>
-      <version>0.8.0-vipshop-SNAPSHOT</version>
     </dependency>
 
     <!-- https://mvnrepository.com/artifact/com.github.luben/zstd-jni -->
