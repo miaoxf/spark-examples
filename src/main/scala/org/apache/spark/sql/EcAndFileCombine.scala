@@ -16,7 +16,7 @@ import org.apache.orc.tools.FileDump
 import org.apache.spark.SparkException
 import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
 import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
-import org.apache.spark.sql.JobType.{JobType, MID_DT_LOCATION, Record}
+import org.apache.spark.sql.JobType.{JobType, MID_DT_LOCATION, DB_NAME, MID_TBL_NAME, Record}
 import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, INIT_CODE, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, SUCCESS_FILE_MISSING, defaultMySQLConfig}
 import org.apache.spark.sql.catalyst.QueryPlanningTracker
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAlias, UnresolvedAttribute}
@@ -585,6 +585,7 @@ object EcAndFileCombine {
       executor.trigger()
     }
     // 增加hook函数
+    Runtime.getRuntime.addShutdownHook(executor.dropmidHook)
     Runtime.getRuntime.addShutdownHook(executor.shutdownHook)
     executor.encapsulateWork()
     executor.scheduleWork()
@@ -660,6 +661,29 @@ class EcAndFileCombine {
           MysqlSingleConn.batchUpdateStatus(jobType.mysqlStatus, PROCESS_KILLED, ids)
       }
       MysqlSingleConn.close()
+    }
+  })
+
+  // drop中间表的hook
+  val dropmidHook = new Thread(new Runnable {
+    override def run(): Unit = {
+      if (curJobs.isEmpty) {
+        return
+      }
+
+      val mapper = new ObjectMapper()
+      curJobs.forEach((id, json) => {
+        val map = mapper.readValue(json, classOf[java.util.HashMap[String, String]])
+        val midDtLocation = map.get(MID_DT_LOCATION)
+        val dbName = map.get(DB_NAME)
+        val midTblName = map.get(MID_TBL_NAME)
+
+        // drop中间表
+        val dropmidtbl = s"drop table if exists ${dbName}.${midTblName}"
+        InnerLogger.warn(InnerLogger.CHECK_MOD, s"DropMidHook start to drop mid table [${dropmidtbl}]")
+        spark.sql(dropmidtbl)
+
+      })
     }
   })
 
@@ -1320,7 +1344,8 @@ class EcAndFileCombine {
       val descViewName = ("desc-" + combineId).replace("-", "0")
       val countSourceSql = s"select count(1) from ${tempViewName}"
       val showTblLikeMidTblSql = "show tables in " + dbName + " like '" + midTblName + "' "
-      val createMidTblSql = "create table IF NOT EXISTS " + dbName + "." + midTblName + " like " + srcTbl
+      // 建表语句直接location到backup
+      val createMidTblSql = "create table IF NOT EXISTS " + dbName + "." + midTblName + " like " + srcTbl + " LOCATION '" + midTblLocation + "' "
       val alterTblLocation = "alter table " + dbName + "." + midTblName + " set LOCATION  '" +midTblLocation + "' "
       val dropFirstPartitionLocation = "alter table " + dbName + "." + midTblName + " drop partition (" + firstPartition + ")"
       val showPartitionOfSrcTblSql = "show partitions " + srcTbl
@@ -1359,6 +1384,7 @@ class EcAndFileCombine {
         case ex: java.lang.ArrayIndexOutOfBoundsException =>
           // 表不存在，则创建，并设置hdfs_path的ec policy
           try {
+            InnerLogger.info(InnerLogger.SPARK_MOD ,s"start create mid table [${createMidTblSql}]")
             spark.sql(createMidTblSql)
           } catch {
             case ex: org.apache.spark.sql.catalyst.analysis.NoSuchTableException =>
