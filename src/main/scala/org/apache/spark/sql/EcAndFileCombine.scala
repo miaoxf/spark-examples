@@ -957,9 +957,9 @@ class EcAndFileCombine {
         s"${targetMysqlTable} where id=${successSchema.get(MYSQL_ID)}")
       if (rs.next()) {
         val status = rs.getInt(1)
-        if (status == SUCCESS_CODE) {
-          MysqlSingleConn.updateStatus("split_flow_status", SUCCESS_CODE, mysqlId.toInt)
-        }
+        // if (status == SUCCESS_CODE) {
+        //  MysqlSingleConn.updateStatus("split_flow_status", SUCCESS_CODE, mysqlId.toInt)
+        // }
         successSchema.put(jobType.mysqlStatus, status.toString)
       }
 
