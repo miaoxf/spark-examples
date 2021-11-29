@@ -911,30 +911,32 @@ class EcAndFileCombine {
       }
       // 以上操作具有原子性
 
-      // 开启分流修改location及cluster
-      if (enableGobalSplitFlow) {
-        val initCluster = ("//[^/]*/".r findFirstIn successSchema.get(LOCATION)).get.replaceAll("/", "")
-        // MysqlSingleConn.updateStatus("path_cluster", "'" + successSchema.get(CLUSTER) + "'", successSchema.get(MYSQL_ID).toInt)
-        val destDtLocation = successSchema.get(DEST_TBL_LOCATION).stripSuffix("/") + "/" + successSchema.get(FIRST_PARTITION)
-        val fileCountOld = successSchema.get(INIT_FILE_NUMS)
-        val fileCount = successSchema.get(COMBINED_FILE_NUMS)
-        // location <- destDtLocation
-        // 更新location和cluster
-        val updateLocationAndClusterSql =
-          s"""
-             |update ${targetMysqlTable}
-             |set path_cluster = '${successSchema.get(CLUSTER)}',location = '${destDtLocation}',cluster_old = '${initCluster}',file_count = ${fileCount},file_count_old = ${fileCountOld}
-             |where id = ${successSchema.get(MYSQL_ID)}
-             |""".stripMargin
-        if (MysqlSingleConn.updateQuery(updateLocationAndClusterSql) <= 0){
-          InnerLogger.error(InnerLogger.CHECK_MOD,s"update location and cluster_old failed! [sql: ${updateLocationAndClusterSql}]")
-          throw new RuntimeException(s"update location and cluster_old failed! [sql: ${updateLocationAndClusterSql}]")
-        } else {
-          InnerLogger.debug(InnerLogger.CHECK_MOD, s"split flow and execute alter location of" +
-            s" dest dt location:${alterDtLocationSql}")
-        }
-        // todo drop mid dt location
+      // mysql 更新record
+      // if (enableGobalSplitFlow) {
+      val initCluster = ("//[^/]*/".r findFirstIn successSchema.get(LOCATION)).get.replaceAll("/", "")
+      // MysqlSingleConn.updateStatus("path_cluster", "'" + successSchema.get(CLUSTER) + "'", successSchema.get(MYSQL_ID).toInt)
+      val destDtLocation = successSchema.get(DEST_TBL_LOCATION).stripSuffix("/") + "/" + successSchema.get(FIRST_PARTITION)
+      val fileCountOld = successSchema.get(INIT_FILE_NUMS)
+      val fileCount = successSchema.get(COMBINED_FILE_NUMS)
+      val totalfileSize = successSchema.get(TOTAL_FILE_SIZE)
+      // location <- destDtLocation
+      // 更新location和cluster
+      // update filesize TOTAL_FILE_SIZE
+      val updateLocationAndClusterSql =
+        s"""
+           |update ${targetMysqlTable}
+           |set path_cluster = '${successSchema.get(CLUSTER)}',location = '${destDtLocation}',cluster_old = '${initCluster}',file_count = ${fileCount},file_count_old = ${fileCountOld},file_size = ${totalfileSize}
+           |where id = ${successSchema.get(MYSQL_ID)}
+           |""".stripMargin
+      InnerLogger.debug(InnerLogger.CHECK_MOD,s"start update location and cluster_old and file_count and file_size [sql: ${updateLocationAndClusterSql}]")
+      if (MysqlSingleConn.updateQuery(updateLocationAndClusterSql) <= 0){
+        InnerLogger.error(InnerLogger.CHECK_MOD,s"update location and cluster_old failed! [sql: ${updateLocationAndClusterSql}]")
+        throw new RuntimeException(s"update location and cluster_old failed! [sql: ${updateLocationAndClusterSql}]")
+      } else {
+        InnerLogger.debug(InnerLogger.CHECK_MOD, s"split flow and execute alter location of" +
+          s" dest dt location:${alterDtLocationSql}")
       }
+      // }
 
       // rename tobedelete to boundtobedelete
       // 保证该命令后，没有 mysql或者hdfs的修改操作
@@ -955,9 +957,9 @@ class EcAndFileCombine {
         s"${targetMysqlTable} where id=${successSchema.get(MYSQL_ID)}")
       if (rs.next()) {
         val status = rs.getInt(1)
-        if (status == SUCCESS_CODE) {
-          MysqlSingleConn.updateStatus("split_flow_status", SUCCESS_CODE, mysqlId.toInt)
-        }
+        // if (status == SUCCESS_CODE) {
+        //  MysqlSingleConn.updateStatus("split_flow_status", SUCCESS_CODE, mysqlId.toInt)
+        // }
         successSchema.put(jobType.mysqlStatus, status.toString)
       }
 
