@@ -60,6 +60,9 @@ object JobType extends Enumeration {
   val TO_BE_DEL_LOCATION = "toBeDelLocation"
   val BOUND_TO_BE_DEL_LOCATION = "boundToBeDelLocation"
   val TOTAL_FILE_SIZE = "totalFileSize"
+  val TOTAL_FILE_SIZE_NEW = "totalFileSizeNew"
+  val SPACE_SIZE = "spaceSize"
+  val SPACE_SIZE_NEW = "spaceSizeNew"
   val NUM_OF_PARTITION_LEVEL = "numOfPartitionLevel"
   val LARGEST_FILE_SIZE = "largestFileSize"
   val MAX_PARTITION_BYTES = "maxPartitionBytes"
@@ -125,6 +128,7 @@ object JobType extends Enumeration {
     var toBeDelLocation: String = ""
     var boundToBeDelLocation: String = ""
     var totalFileSize: Long = -1
+    var spaceSize: Long = -1
     var numOfPartitionLevel: String = ""
     var largestFileSize: String = ""
     var maxPartitionBytes: Long = -1
@@ -158,6 +162,7 @@ object JobType extends Enumeration {
       res.put(BOUND_TO_BE_DEL_LOCATION, boundToBeDelLocation)
       res.put(SOURCE_TBL_LOCATION, sourceTblLocation);
       res.put(TOTAL_FILE_SIZE, totalFileSize.toString)
+      res.put(SPACE_SIZE, spaceSize.toString)
       res.put(NUM_OF_PARTITION_LEVEL, numOfPartitionLevel);
       res.put(LARGEST_FILE_SIZE, largestFileSize)
       res.put(MAX_PARTITION_BYTES, maxPartitionBytes.toString);
@@ -369,6 +374,8 @@ object EcAndFileCombine {
   var testMode: Boolean = false
   val sdf = new SimpleDateFormat("yyyyMMdd")
   var splitFlowLevel: Int = 1
+  var expandThreshold: Double = 1.2
+  var diffTotalSizeThreshold: Long = 53687091200L
 
   //  ExtClasspathLoader.loadClasspath(new File(
   //    "/home/vipshop/platform/spark-3.0.1/jars/spark-sql_2.12-3.0.1-SNAPSHOT.jar"))
@@ -385,10 +392,15 @@ object EcAndFileCombine {
     // 获取source目录的总的文件数和总大小
     val countRes = s"hdfs dfs -count ${record.location}".!!
       .split(" ").filter(!_.equals(""))
+    // du源目录获取spacesize
+    val spaceSizeRes = s"hdfs dfs -du -s ${record.location}".!!
+      .split(" ").filter(!_.equals(""))
     val initFileNumsCmd = countRes(1).stripMargin
     val realTotalFileSize = countRes(2).stripMargin.toLong
+    val realspaceSize = spaceSizeRes(1).stripMargin.toLong
     val mysqlTotalFileSize = record.totalFileSize
     record.initFileNums = initFileNumsCmd.toLong
+    record.spaceSize = realspaceSize
     if (realTotalFileSize != record.totalFileSize) {
       // 对mysql中获取的file_size进行修正，如，避免mysql中file_size为0的情况
       record.totalFileSize = realTotalFileSize
@@ -570,10 +582,12 @@ object EcAndFileCombine {
     onlyCoalesce = if (args.size > 17) args(17).toBoolean else false
     enableHandleBucketTable = if (args.size > 18) args(18).toBoolean else false
     enableFileCountOrder = if (args.size > 19) args(19).toBoolean else true
-    splitFlowLevel = if (args.size > 20) args(20).toInt else 1
-    enableOrcDumpWithSpark = if (args.size > 21) args(21).toBoolean else false
-    fileCombineThreshold = if (args.size > 22) args(22).toLong else 104857600
-    submitSparkShell = if (args.size > 23) args(23).toBoolean else true
+    expandThreshold = if (args.size > 20) args(20).toDouble else 1.2
+    diffTotalSizeThreshold = if (args.size > 21) args(21).toLong else 53687091200L
+    splitFlowLevel = if (args.size > 22) args(22).toInt else 1
+    enableOrcDumpWithSpark = if (args.size > 23) args(23).toBoolean else false
+    fileCombineThreshold = if (args.size > 24) args(24).toLong else 104857600
+    submitSparkShell = if (args.size > 25) args(25).toBoolean else true
   }
 
   def main(args: Array[String]): Unit = {
@@ -790,6 +804,7 @@ class EcAndFileCombine {
       val workSchema = s"hdfs dfs -cat ${successFileLocation}".!!
       // todo 如果读取失败？
       val successSchema: java.util.HashMap[String, String] = mapper.readValue(workSchema, classOf[java.util.HashMap[String, String]])
+      /**
       jobType match {
         case JobType.ec =>
           InnerLogger.debug(InnerLogger.CHECK_MOD, "this is an ec job...")
@@ -817,6 +832,7 @@ class EcAndFileCombine {
         case JobType.fileCombine =>
           InnerLogger.debug(InnerLogger.CHECK_MOD, "this is a fileCombine job...")
       }
+      **/
 
       // change dir of source and mid
       // 删除success file
@@ -919,13 +935,17 @@ class EcAndFileCombine {
       val fileCountOld = successSchema.get(INIT_FILE_NUMS)
       val fileCount = successSchema.get(COMBINED_FILE_NUMS)
       val totalfileSize = successSchema.get(TOTAL_FILE_SIZE)
+      val spaceSize = successSchema.get(SPACE_SIZE)
+      val spaceSizeNew = successSchema.get(SPACE_SIZE_NEW)
+      val fileSizeNew = successSchema.get(TOTAL_FILE_SIZE_NEW)
       // location <- destDtLocation
       // 更新location和cluster
       // update filesize TOTAL_FILE_SIZE
       val updateLocationAndClusterSql =
         s"""
            |update ${targetMysqlTable}
-           |set path_cluster = '${successSchema.get(CLUSTER)}',location = '${destDtLocation}',cluster_old = '${initCluster}',file_count = ${fileCount},file_count_old = ${fileCountOld},file_size = ${totalfileSize}
+           |set path_cluster = '${successSchema.get(CLUSTER)}',location = '${destDtLocation}',cluster_old = '${initCluster}',file_count = ${fileCount},file_count_old = ${fileCountOld},
+           |file_size = ${totalfileSize},file_size_new = ${fileSizeNew},spacesize= ${spaceSize},spacesize_new= ${spaceSizeNew}
            |where id = ${successSchema.get(MYSQL_ID)}
            |""".stripMargin
       InnerLogger.debug(InnerLogger.CHECK_MOD,s"start update location and cluster_old and file_count and file_size [sql: ${updateLocationAndClusterSql}]")
@@ -1699,6 +1719,26 @@ class EcAndFileCombine {
       val combinedFileNums = s"hdfs dfs -count ${schemaMap.get(MID_DT_LOCATION)}".!!
         .split(" ").filter(!_.equals(""))(1).stripMargin
       resultMap.put(COMBINED_FILE_NUMS, combinedFileNums)
+      // 获取新文件Size,新SpaceSize
+      val spaceSizeNewRes = s"hdfs dfs -du -s ${schemaMap.get(MID_DT_LOCATION)}".!!
+        .split(" ").filter(!_.equals(""))
+      val fileSizeNew = spaceSizeNewRes(0).stripMargin.toDouble
+      val spaceSizeNew = spaceSizeNewRes(1).stripMargin.toDouble
+      resultMap.put(TOTAL_FILE_SIZE_NEW, fileSizeNew.toString)
+      resultMap.put(SPACE_SIZE_NEW, spaceSizeNew.toString)
+
+      val fileSize = resultMap.get(TOTAL_FILE_SIZE).toDouble
+      val fileSizeDiff = fileSizeNew.toLong - fileSize.toLong
+      // 校验fileSize膨胀,合并后filesize膨胀1.2倍,throw error
+      InnerLogger.info(InnerLogger.SPARK_MOD, s"fileSize changed from ${fileSize} to ${fileSizeNew} expand : ${fileSizeNew/fileSize} expandThreshold: ${expandThreshold} / TotalSizeDiff: ${fileSizeDiff} diffTotalSizeThreshold: ${diffTotalSizeThreshold}")
+      if ( fileSize == 0 || fileSizeNew/fileSize > expandThreshold || fileSizeDiff > diffTotalSizeThreshold ) {
+        // check data quality failed!
+        val message = s"check data size expand failed!" +
+          s" size of source table is ${fileSize}, but size of mid table is ${fileSizeNew}! over expand threshold(${expandThreshold})" +
+          s" or filesize diff ${fileSizeDiff} over ${diffTotalSizeThreshold}"
+        InnerLogger.error(InnerLogger.SPARK_MOD, message)
+        throw new SparkException(message)
+      }
 
       val successPath = midDTLocation.stripSuffix("/") + "/" + SUCCESS_FILE_NAME
       val content = mapper.writeValueAsBytes(resultMap)
