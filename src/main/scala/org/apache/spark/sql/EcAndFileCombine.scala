@@ -1559,13 +1559,93 @@ class EcAndFileCombine {
       spark.conf.set("spark.sql.shuffle.partitions", defaultParallelism)
 
       InnerLogger.debug(InnerLogger.SPARK_MOD, "start to insert data into mid table...")
+
+      def insertFineGrained(location2Sql: Tuple5[String, String, String, ArrayBuffer[String], String],isShuffle: Boolean): Unit = {
+        val createDataSourceSql = "select * from " + srcTbl + " where " + location2Sql._2
+        tempViewName = (tempViewName + "0" + location2Sql._1)
+          .replace("/", "0").replace("=", "0")
+        // drop constant partition value
+        val df = spark.sql(createDataSourceSql).drop(location2Sql._4:_*)
+        df.createOrReplaceTempView(tempViewName)
+        // 设置maxSplitBytes
+        // spark.conf.set("spark.sql.files.maxPartitionBytes", maxPartitionBytes)
+        val fineGrainedLocation = sourceTblLocation.stripSuffix("/") + "/" + location2Sql._1
+        if (s"hdfs dfs -test -e ${fineGrainedLocation}".! == 0) {
+          InnerLogger.debug(InnerLogger.SPARK_MOD, s"start to run fineGrainedLocation[${fineGrainedLocation}]...")
+          val totalSize = s"hdfs dfs -count ${fineGrainedLocation}".!!
+            .split(" ").filter(!_.equals(""))(2).stripMargin
+          var parallelism: Long = totalSize.toLong / maxPartitionBytes.toLong
+          if (parallelism <= 0) parallelism = 1
+          InnerLogger.debug(InnerLogger.SPARK_MOD, "get size of fineGrainedLocation: " +
+            s"${fineGrainedLocation},totalSize:${totalSize},maxPartitionBytes:${maxPartitionBytes}," +
+            s"parallelism:${parallelism}")
+          if (parallelism > 0) {
+            if (isShuffle) {
+              insertSql = s"insert overwrite table " + dbName + "." + midTblName +
+                s" partition (${location2Sql._3}) " +
+                s"select /*+ repartition(${parallelism}) */ * from " + tempViewName
+            } else {
+              insertSql = s"insert overwrite table " + dbName + "." + midTblName +
+                s" partition (${location2Sql._3}) " +
+                s"select /*+ coalesce(${parallelism}) */ * from " + tempViewName
+            }
+            InnerLogger.debug(InnerLogger.SPARK_MOD, "start to execute insertion with static" +
+              s"partition: ${insertSql}")
+            var res = true
+            try {
+              spark.sql(insertSql)
+            } catch {
+              case ex: Exception =>
+                val msg = if (ex.getCause == null) ex.getMessage + "\n" + ex.getStackTrace.mkString("\n")
+                else ex.getMessage + "\n" + ex.getStackTrace.mkString("\n") + "\n" + ex.getCause.toString
+                InnerLogger.error(InnerLogger.SPARK_MOD, s"insert sql[sql:${insertSql},fineGrainedLocation:" +
+                  s"${fineGrainedLocation}] executed failed:\n${msg}")
+                res = false
+            }
+            if (res) InnerLogger.info(InnerLogger.SPARK_MOD, s"execute insertion [${insertSql}] successfully," +
+              s"location[${fineGrainedLocation}]")
+          }
+        } else {
+          InnerLogger.warn(InnerLogger.SPARK_MOD, s"fineGrainedLocation[${fineGrainedLocation}] did not exist!")
+        }
+      }
+
       try {
         // defaultParallelism本身就是不大于initFileNums
+        // Coalesce方式也要修改通过静态分区方式
+        // 修改分区数
+        // 并发执行子分区
+        var syncInsertSize = 2
+        var syncInsertSizeMax = 5
+        val insertPool = new ThreadPoolExecutor(syncInsertSize,syncInsertSizeMax,10000L,
+          TimeUnit.MILLISECONDS,new LinkedBlockingQueue[Runnable])
+        val insertFutureList = new ArrayBuffer[Future[_]]()
         if (onlyCoalesce || initFileNums == defaultParallelism.toLong) {
           // 特定场景下可以改为coalesce，避免shuffle。
+          /**
           insertSql = insertSql.replace("repartition", "coalesce")
           InnerLogger.info(InnerLogger.SPARK_MOD, s"start to execute insertion with coalesce: spark.sql(${insertSql})")
           spark.sql(insertSql)
+           **/
+          assert(locationToStaticPartitionSql != null)
+          spark.conf.set("spark.sql.sources.partitionOverwriteMode", PartitionOverwriteMode.DYNAMIC.toString)
+          locationToStaticPartitionSql.foreach(location2Sql => {
+            val insertFuture = insertPool.submit(new Runnable {
+              override def run(): Unit = insertFineGrained(location2Sql, false)
+            })
+            insertFutureList += insertFuture
+          })
+          insertFutureList.foreach(f => {
+            try {
+              f.get()
+            } catch {
+              case ex: Exception =>
+                val msg = if (ex.getCause == null) ex.getMessage + "\n" + ex.getStackTrace.mkString("\n")
+                else ex.getMessage + "\n" + ex.getStackTrace.mkString("\n") + "\n" + ex.getCause.toString
+                InnerLogger.error(InnerLogger.SPARK_MOD, msg)
+            }
+          })
+
         } else if (enableFineGrainedInsertion && allStaticPartition) {
           // 可以找到所有的静态分区，按照最细粒度合并
           // 动态分区仍然开启，通过动态分区的方式insert，但是overwrite模式改成动态的!
