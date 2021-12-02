@@ -1610,6 +1610,11 @@ class EcAndFileCombine {
         }
       }
 
+      def repartitionIntervene(sourceName: String): String = {
+        val sourceSql = "select * from " + sourceName
+        RepartitionIntervene.getEstimateRepartitionFieldStr(spark.sql(sourceSql).rdd)
+      }
+
       try {
         // defaultParallelism本身就是不大于initFileNums
         // Coalesce方式也要修改通过静态分区方式
@@ -1676,7 +1681,7 @@ class EcAndFileCombine {
               if (parallelism > 0) {
                 insertSql = s"insert overwrite table " + dbName + "." + midTblName +
                   s" partition (${location2Sql._3}) " +
-                  s"select /*+ repartition(${parallelism}) */ * from " + tempViewName
+                  s"select /*+ repartition(${parallelism}, ${repartitionIntervene(tempViewName)}) */ * from " + tempViewName
                 InnerLogger.debug(InnerLogger.SPARK_MOD, "start to execute insertion with static" +
                   s"partition: ${insertSql}")
                 var res = true
