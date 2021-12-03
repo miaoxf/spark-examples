@@ -1564,14 +1564,20 @@ class EcAndFileCombine {
 
       def insertFineGrained(location2Sql: Tuple5[String, String, String, ArrayBuffer[String], String],isShuffle: Boolean): Unit = {
         val createDataSourceSql = "select * from " + srcTbl + " where " + location2Sql._2
-        tempViewName = (tempViewName + "0" + location2Sql._1)
-          .replace("/", "0").replace("=", "0")
+        // 新建viewName eg:vipdw0goods_expo0dt0202111210hm01315
+        val fineViewName = (srcTbl + "0" + location2Sql._1)
+          .replace(".","0")
+          .replace("/", "0")
+          .replace("=", "0")
+        // tempViewName = (tempViewName + "0" + location2Sql._1).replace("/", "0").replace("=", "0")
         // drop constant partition value
+        InnerLogger.debug(InnerLogger.SPARK_MOD, s"view as : ${fineViewName} : ${createDataSourceSql} ")
         val df = spark.sql(createDataSourceSql).drop(location2Sql._4:_*)
-        df.createOrReplaceTempView(tempViewName)
+        df.createOrReplaceTempView(fineViewName)
         // 设置maxSplitBytes
         // spark.conf.set("spark.sql.files.maxPartitionBytes", maxPartitionBytes)
         val fineGrainedLocation = sourceTblLocation.stripSuffix("/") + "/" + location2Sql._1
+        var fineInsertSql = ""
         if (s"hdfs dfs -test -e ${fineGrainedLocation}".! == 0) {
           InnerLogger.debug(InnerLogger.SPARK_MOD, s"start to run fineGrainedLocation[${fineGrainedLocation}]...")
           val totalSize = s"hdfs dfs -count ${fineGrainedLocation}".!!
@@ -1583,28 +1589,28 @@ class EcAndFileCombine {
             s"parallelism:${parallelism}")
           if (parallelism > 0) {
             if (isShuffle) {
-              insertSql = s"insert overwrite table " + dbName + "." + midTblName +
+              fineInsertSql = s"insert overwrite table " + dbName + "." + midTblName +
                 s" partition (${location2Sql._3}) " +
-                s"select /*+ repartition(${parallelism}) */ * from " + tempViewName
+                s"select /*+ repartition(${parallelism}) */ * from " + fineViewName
             } else {
-              insertSql = s"insert overwrite table " + dbName + "." + midTblName +
+              fineInsertSql = s"insert overwrite table " + dbName + "." + midTblName +
                 s" partition (${location2Sql._3}) " +
-                s"select /*+ coalesce(${parallelism}) */ * from " + tempViewName
+                s"select /*+ coalesce(${parallelism}) */ * from " + fineViewName
             }
             InnerLogger.debug(InnerLogger.SPARK_MOD, "start to execute insertion with static" +
-              s"partition: ${insertSql}")
+              s"partition: ${fineInsertSql}")
             var res = true
             try {
-              spark.sql(insertSql)
+              spark.sql(fineInsertSql)
             } catch {
               case ex: Exception =>
                 val msg = if (ex.getCause == null) ex.getMessage + "\n" + ex.getStackTrace.mkString("\n")
                 else ex.getMessage + "\n" + ex.getStackTrace.mkString("\n") + "\n" + ex.getCause.toString
-                InnerLogger.error(InnerLogger.SPARK_MOD, s"insert sql[sql:${insertSql},fineGrainedLocation:" +
+                InnerLogger.error(InnerLogger.SPARK_MOD, s"insert sql[sql:${fineInsertSql},fineGrainedLocation:" +
                   s"${fineGrainedLocation}] executed failed:\n${msg}")
                 res = false
             }
-            if (res) InnerLogger.info(InnerLogger.SPARK_MOD, s"execute insertion [${insertSql}] successfully," +
+            if (res) InnerLogger.info(InnerLogger.SPARK_MOD, s"execute insertion [${fineInsertSql}] successfully," +
               s"location[${fineGrainedLocation}]")
           }
         } else {
@@ -1659,6 +1665,7 @@ class EcAndFileCombine {
           // 动态分区仍然开启，通过动态分区的方式insert，但是overwrite模式改成动态的!
           // todo 考虑并发执行
           // todo 这个参数会影响同时并发跑的其他job！
+          // 改repartition注意共享变量
           assert(locationToStaticPartitionSql != null)
           spark.conf.set("spark.sql.sources.partitionOverwriteMode", PartitionOverwriteMode.DYNAMIC.toString)
 
