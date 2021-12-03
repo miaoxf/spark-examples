@@ -43,7 +43,8 @@ object RepartitionIntervene {
   }
 
   def getEstimateRepartitionFieldStr(datasource: RDD[Row], fraction: Double = 0.01): String = {
-    estimateRepartitionField(datasource, fraction).mkString(",")
+    val ret = estimateRepartitionField(datasource, fraction)
+    if (ret.isEmpty) "" else ret.mkString(",")
   }
 
   def estimateRepartitionField(datasource: RDD[Row], fraction: Double = 0.01): Seq[String] = {
@@ -63,7 +64,14 @@ object RepartitionIntervene {
 
   private def excludeOrRetainFields(sampleRdd: RDD[Row], potentialFields: Seq[StructFieldEnhance]): Seq[StructFieldEnhance] = {
     // todo
-    Seq(potentialFields(0), potentialFields(1), potentialFields(2))
+    if (potentialFields.size >= 3) {
+      Seq(potentialFields(0), potentialFields(1), potentialFields(2))
+    } else if (potentialFields.size >= 2) {
+      Seq(potentialFields(0), potentialFields(1))
+    } else {
+      // if size is equal to 1, abort the field, to avoid data skew
+      Seq()
+    }
   }
 
   private def estimateFieldsByTotalSize(sampleRdd: RDD[Row]): Seq[StructFieldEnhance] = {

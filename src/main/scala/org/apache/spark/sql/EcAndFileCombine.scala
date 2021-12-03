@@ -1612,7 +1612,8 @@ class EcAndFileCombine {
 
       def repartitionIntervene(sourceName: String): String = {
         val sourceSql = "select * from " + sourceName
-        RepartitionIntervene.getEstimateRepartitionFieldStr(spark.sql(sourceSql).rdd)
+        val ret = RepartitionIntervene.getEstimateRepartitionFieldStr(spark.sql(sourceSql).rdd)
+        if (ret.isEmpty) "" else "," + ret
       }
 
       try {
@@ -1681,7 +1682,7 @@ class EcAndFileCombine {
               if (parallelism > 0) {
                 insertSql = s"insert overwrite table " + dbName + "." + midTblName +
                   s" partition (${location2Sql._3}) " +
-                  s"select /*+ repartition(${parallelism}, ${repartitionIntervene(tempViewName)}) */ * from " + tempViewName
+                  s"select /*+ repartition(${parallelism}${repartitionIntervene(tempViewName)}) */ * from " + tempViewName
                 InnerLogger.debug(InnerLogger.SPARK_MOD, "start to execute insertion with static" +
                   s"partition: ${insertSql}")
                 var res = true
