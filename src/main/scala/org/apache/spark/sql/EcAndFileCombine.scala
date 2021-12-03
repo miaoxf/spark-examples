@@ -376,6 +376,7 @@ object EcAndFileCombine {
   var splitFlowLevel: Int = 1
   var expandThreshold: Double = 1.2
   var diffTotalSizeThreshold: Long = 53687091200L
+  var enableExpandThreshold: Boolean = true
 
   //  ExtClasspathLoader.loadClasspath(new File(
   //    "/home/vipshop/platform/spark-3.0.1/jars/spark-sql_2.12-3.0.1-SNAPSHOT.jar"))
@@ -584,10 +585,11 @@ object EcAndFileCombine {
     enableFileCountOrder = if (args.size > 19) args(19).toBoolean else true
     expandThreshold = if (args.size > 20) args(20).toDouble else 1.2
     diffTotalSizeThreshold = if (args.size > 21) args(21).toLong else 53687091200L
-    splitFlowLevel = if (args.size > 22) args(22).toInt else 1
-    enableOrcDumpWithSpark = if (args.size > 23) args(23).toBoolean else false
-    fileCombineThreshold = if (args.size > 24) args(24).toLong else 104857600
-    submitSparkShell = if (args.size > 25) args(25).toBoolean else true
+    enableExpandThreshold = if (args.size > 22) args(22).toBoolean else true
+    splitFlowLevel = if (args.size > 23) args(23).toInt else 1
+    enableOrcDumpWithSpark = if (args.size > 24) args(24).toBoolean else false
+    fileCombineThreshold = if (args.size > 25) args(25).toLong else 104857600
+    submitSparkShell = if (args.size > 26) args(26).toBoolean else true
   }
 
   def main(args: Array[String]): Unit = {
@@ -1817,7 +1819,8 @@ class EcAndFileCombine {
       val fileSizeDiff = fileSizeNew.toLong - fileSize.toLong
       // 校验fileSize膨胀,合并后filesize膨胀1.2倍,throw error
       InnerLogger.info(InnerLogger.SPARK_MOD, s"fileSize changed from ${fileSize} to ${fileSizeNew} expand : ${fileSizeNew/fileSize} expandThreshold: ${expandThreshold} / TotalSizeDiff: ${fileSizeDiff} diffTotalSizeThreshold: ${diffTotalSizeThreshold}")
-      if ( fileSize == 0 || fileSizeNew/fileSize > expandThreshold || fileSizeDiff > diffTotalSizeThreshold ) {
+      if ( enableExpandThreshold && (fileSize == 0 || fileSizeNew/fileSize > expandThreshold
+        || fileSizeDiff > diffTotalSizeThreshold) ) {
         // check data quality failed!
         val message = s"check data size expand failed!" +
           s" size of source table is ${fileSize}, but size of mid table is ${fileSizeNew}! over expand threshold(${expandThreshold})" +
