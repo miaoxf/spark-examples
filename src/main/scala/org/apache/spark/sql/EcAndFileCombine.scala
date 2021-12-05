@@ -1230,8 +1230,6 @@ class EcAndFileCombine {
         .set("spark.hadoop.hive.exec.dynamic.partition.mode", "nostrick")
         .set("spark.hadoop.hive.exec.max.dynamic.partitions", "2000")
         .setSparkHome(sparkHomePath)
-        // todo delete
-        .set("SPARK_CONF_DIR", "/home/vipshop/conf/spark3_0")
         .setAppName(sparkApplicationName)
     }
 
