@@ -16,7 +16,7 @@ import org.apache.orc.tools.FileDump
 import org.apache.spark.SparkException
 import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
 import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
-import org.apache.spark.sql.JobType.{JobType, MID_DT_LOCATION, DB_NAME, MID_TBL_NAME, Record}
+import org.apache.spark.sql.JobType.{DB_NAME, JobType, MID_DT_LOCATION, MID_TBL_NAME, Record}
 import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, INIT_CODE, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, SUCCESS_FILE_MISSING, defaultMySQLConfig}
 import org.apache.spark.sql.catalyst.QueryPlanningTracker
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAlias, UnresolvedAttribute}
@@ -34,7 +34,7 @@ import java.util
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 import java.util.stream.Collectors
-import java.util.{Date, Locale, UUID, stream}
+import java.util.{Date, Locale, Properties, UUID, stream}
 import scala.collection.immutable.Range
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
@@ -370,7 +370,6 @@ object EcAndFileCombine {
   var shutdownSparkContextForcely = false
   var enableMaxRecordsPerFile: Boolean = false
   var fileCombineThreshold: Long = _
-  var submitSparkShell: Boolean = _
   var testMode: Boolean = false
   val sdf = new SimpleDateFormat("yyyyMMdd")
   var splitFlowLevel: Int = 1
@@ -589,12 +588,68 @@ object EcAndFileCombine {
     splitFlowLevel = if (args.size > 23) args(23).toInt else 1
     enableOrcDumpWithSpark = if (args.size > 24) args(24).toBoolean else false
     fileCombineThreshold = if (args.size > 25) args(25).toLong else 104857600
-    submitSparkShell = if (args.size > 26) args(26).toBoolean else true
   }
+
+  def initParamsV2(params: Array[String]): Unit = {
+    val paramMap = new java.util.HashMap[String, String]()
+    params.foreach(p => {
+      if (!p.isEmpty) {
+        val pair = p.split("=")
+        if (pair.size == 2 && pair(0) != null) paramMap.put(pair(0), pair(1))
+      }
+    })
+    val sparkConfDir: String = "/home/vipshop/conf/spark3_0_xuefei"
+    val properties: Properties = new Properties()
+    try {
+      properties.load(new FileInputStream(new File(sparkConfDir.stripSuffix("/") + "/ec.conf")))
+    } catch {
+      case e: Exception =>
+    }
+
+    actionId = getConf("actionId").get
+    actionSid = getConf("actionSid").get
+    targetMysqlTable = getConf("targetMysqlTable").get
+    yarnQueue = getConf("yarnQueue").getOrElse("root.basic_platform.online")
+    jobType = if (getConf("jobType").getOrElse("0").toInt == 0) JobType.ec else JobType.fileCombine
+    batchSize = getConf("batchSize").getOrElse("10").toInt
+    sparkConcurrency = getConf("sparkConcurrency").getOrElse("2").toInt
+    enableFileSizeOrder = getConf("enableFileSizeOrder").getOrElse("true").toBoolean
+    handleFileSizeOrder = getConf("handleFileSizeOrder").getOrElse("desc")
+    enableGobalSplitFlow = getConf("enableGobalSplitFlow").getOrElse("false").toBoolean
+    splitFlowCluster = getConf("splitFlowCluster").getOrElse("")
+    targetTableToEcOrCombine = getConf("targetTableToEcOrCombine").getOrElse("")
+    shutdownSparkContextForcely = getConf("shutdownSparkContextForcely").getOrElse("false").toBoolean
+    enableMaxRecordsPerFile = getConf("enableMaxRecordsPerFile").getOrElse("false").toBoolean
+    filesTotalThreshold = getConf("filesTotalThreshold").getOrElse("20000").toLong
+    onlyHandleOneLevelPartition = getConf("onlyHandleOneLevelPartition").getOrElse("false").toBoolean
+    enableFineGrainedInsertion = getConf("enableFineGrainedInsertion").getOrElse("true").toBoolean
+    onlyCoalesce = getConf("onlyCoalesce").getOrElse("false").toBoolean
+    enableHandleBucketTable = getConf("enableHandleBucketTable").getOrElse("false").toBoolean
+    enableFileCountOrder = getConf("enableFileCountOrder").getOrElse("false").toBoolean
+    expandThreshold = getConf("expandThreshold").getOrElse("1.2").toDouble
+    diffTotalSizeThreshold = getConf("diffTotalSizeThreshold").getOrElse("53687091200L").toLong
+    enableExpandThreshold = getConf("enableExpandThreshold").getOrElse("false").toBoolean
+    splitFlowLevel = getConf("splitFlowLevel").getOrElse("1").toInt
+    enableOrcDumpWithSpark = getConf("enableOrcDumpWithSpark").getOrElse("false").toBoolean
+    fileCombineThreshold = getConf("fileCombineThreshold").getOrElse("104857600").toLong
+
+    def getConf(key: String): Option[String] = {
+      try {
+        if (paramMap.containsKey(key)) {
+          Option(paramMap.get(key))
+        } else {
+          Option(properties.getProperty(key))
+        }
+      } catch {
+        case e: Exception => None
+      }
+    }
+  }
+
 
   def main(args: Array[String]): Unit = {
     // $SPARK_HOME/bin/spark-submit --class org.apache.spark.sql.EcAndFileCombine ./ec-with-dep3.jar
-    initParams(args)
+    initParamsV2(args)
     val executor = new EcAndFileCombine
     if (onlineTestMode) {
       // for test
