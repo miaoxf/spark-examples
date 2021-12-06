@@ -1284,6 +1284,7 @@ class EcAndFileCombine {
         .set("spark.hadoop.hive.exec.dynamic.partition", "true")
         .set("spark.hadoop.hive.exec.dynamic.partition.mode", "nostrick")
         .set("spark.hadoop.hive.exec.max.dynamic.partitions", "2000")
+        .set("spark.yarn.archive", "hdfs://bipcluster/dp/spark/spark-lib-3.0.1-ec.jar")
         .setSparkHome(sparkHomePath)
         .setAppName(sparkApplicationName)
     }
