@@ -616,8 +616,8 @@ object EcAndFileCombine {
     enableFileSizeOrder = getConf("enableFileSizeOrder").getOrElse("true").toBoolean
     handleFileSizeOrder = getConf("handleFileSizeOrder").getOrElse("desc")
     enableGobalSplitFlow = getConf("enableGobalSplitFlow").getOrElse("false").toBoolean
-    splitFlowCluster = getConf("splitFlowCluster").getOrElse("")
-    targetTableToEcOrCombine = getConf("targetTableToEcOrCombine").getOrElse("")
+    splitFlowCluster = getConf("splitFlowCluster").orNull
+    targetTableToEcOrCombine = getConf("targetTableToEcOrCombine").orNull
     shutdownSparkContextForcely = getConf("shutdownSparkContextForcely").getOrElse("false").toBoolean
     enableMaxRecordsPerFile = getConf("enableMaxRecordsPerFile").getOrElse("false").toBoolean
     filesTotalThreshold = getConf("filesTotalThreshold").getOrElse("20000").toLong
@@ -627,7 +627,7 @@ object EcAndFileCombine {
     enableHandleBucketTable = getConf("enableHandleBucketTable").getOrElse("false").toBoolean
     enableFileCountOrder = getConf("enableFileCountOrder").getOrElse("false").toBoolean
     expandThreshold = getConf("expandThreshold").getOrElse("1.2").toDouble
-    diffTotalSizeThreshold = getConf("diffTotalSizeThreshold").getOrElse("53687091200L").toLong
+    diffTotalSizeThreshold = getConf("diffTotalSizeThreshold").getOrElse("53687091200").toLong
     enableExpandThreshold = getConf("enableExpandThreshold").getOrElse("false").toBoolean
     splitFlowLevel = getConf("splitFlowLevel").getOrElse("1").toInt
     enableOrcDumpWithSpark = getConf("enableOrcDumpWithSpark").getOrElse("false").toBoolean
@@ -1059,7 +1059,7 @@ class EcAndFileCombine {
        |select group_concat(t.id) from (select id from ${targetMysqlTable}
        |    where ${jobType.mysqlStatus} = 0
        |    ${if (onlyHandleOneLevelPartition) "and " + jobType.numPartitions + " <= 1" else " "}
-       |    ${if (!targetTableToEcOrCombine.equals("")) " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
+       |    ${if (targetTableToEcOrCombine != null) " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
        |    ${if (enableFileCountOrder && enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "}
        |    ${if (enableFileCountOrder) "order by split_flow_status " else " "}
        |    ${if (!enableFileCountOrder && enableFileSizeOrder) "order by file_size " + handleFileSizeOrder else " "}
@@ -1117,7 +1117,7 @@ class EcAndFileCombine {
     s"""
        |select id,db_name,tbl_name,location,first_partition,${jobType.mysqlStatus},path_cluster,dt,file_size
        |    from ${targetMysqlTable} where ${if (!onlineTestMode) jobType.mysqlStatus + " = 1 and " else " "} id in (${ids})
-       |    ${if (!targetTableToEcOrCombine.equals("")) " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
+       |    ${if (targetTableToEcOrCombine != null) " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
        |    ${if (enableFileCountOrder && enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "};
        |""".stripMargin
     InnerLogger.debug(InnerLogger.ENCAP_MOD, s"sql to get datasource: ${getDatasourceSql}")
@@ -1140,9 +1140,9 @@ class EcAndFileCombine {
       val prefix = "hdfs://" + initCluster
       // 如果在main函数入参中开启分流，且指定了分流的目标集群，那么就会将cluster替换成目标集群
       // 另外，如果mysql数据源中将cluster修改成其他集群，在开启分流的情况下，才会将cluster替换成目标集群
-      if (record.enableSplitFlow && !splitFlowCluster.equals("")) {
+      if (record.enableSplitFlow && splitFlowCluster != null) {
         record.cluster = splitFlowCluster
-      } else if (record.enableSplitFlow && splitFlowCluster.equals("")
+      } else if (record.enableSplitFlow && splitFlowCluster == null
         && !initCluster.equals(record.cluster)) {
         record.cluster = initCluster
       }
@@ -1284,6 +1284,7 @@ class EcAndFileCombine {
         .set("spark.hadoop.hive.exec.dynamic.partition", "true")
         .set("spark.hadoop.hive.exec.dynamic.partition.mode", "nostrick")
         .set("spark.hadoop.hive.exec.max.dynamic.partitions", "2000")
+        .set("spark.yarn.archive", "hdfs://bipcluster/dp/spark/spark-lib-3.0.1-ec.jar")
         .setSparkHome(sparkHomePath)
         .setAppName(sparkApplicationName)
     }
