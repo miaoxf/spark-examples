@@ -15,6 +15,7 @@ import org.apache.orc.impl.OrcAcidUtils
 import org.apache.orc.tools.FileDump
 import org.apache.spark.SparkException
 import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
+import org.apache.spark.sql.InnerUtils.configuration
 import org.apache.spark.sql.JobType.{DB_NAME, JobType, MID_DT_LOCATION, MID_TBL_NAME, Record}
 import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, INIT_CODE, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, SUCCESS_FILE_MISSING, defaultMySQLConfig}
 import org.apache.spark.sql.OrcFileDumpCheck.dumpOrcFileWithSpark
@@ -869,7 +870,7 @@ class EcAndFileCombine {
           val inputFormat = successSchema.get(INPUT_FORMAT)
           val outputFormat = successSchema.get(OUTPUT_FORMAT)
           val totalFileCount = successSchema.get(COMBINED_FILE_NUMS).toLong
-          val orcCheckPara = (totalFileCount/100).toInt
+          val orcCheckPara = (totalFileCount/100).toInt + 1
           if (!enableGobalSplitFlow && ORC_INPUT_FORMAT.equalsIgnoreCase(inputFormat)
             && ORC_OUTPUT_FORMAT.equalsIgnoreCase(outputFormat)) {
             // execute orc file dump
@@ -878,7 +879,7 @@ class EcAndFileCombine {
             val toDumpPath = successSchema.get(MID_DT_LOCATION)
             if (enableOrcDumpWithSpark) {
               // val bool = dumpOrcFileWithSpark(spark, toDumpPath)
-              val corFileList = dumpOrcFileWithSpark(spark, toDumpPath, orcCheckPara)
+              val corFileList = dumpOrcFileWithSpark(spark, toDumpPath, orcCheckPara, configuration)
               if (corFileList.length == 0) {
                 InnerLogger.info(InnerLogger.SCHE_MOD, s"${toDumpPath} all file is correct")
               } else {

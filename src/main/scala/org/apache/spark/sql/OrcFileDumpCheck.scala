@@ -11,8 +11,6 @@ import scala.collection.mutable.ArrayBuffer
 
 object OrcFileDumpCheck {
 
-    var configuration: Configuration = getHadoopConfInShell
-
     // 获取子分区下的所有文件
     def getAllFilesInPath(parentPath: Path, configuration: Configuration, buffer: ArrayBuffer[Path]): Unit = {
         val fileSystem = parentPath.getFileSystem(configuration)
@@ -33,7 +31,7 @@ object OrcFileDumpCheck {
 
     // 校验单分区下的所有文件
     def dumpOrcFileWithSpark(spark: SparkSession, parentPath: String,
-                             parallelism: Int = 500): Array[String] = {
+                             parallelism: Int = 500, configuration: Configuration): Array[String] = {
         val path = new Path(parentPath)
         val fileInPath = new ArrayBuffer[Path]()
 
@@ -44,19 +42,24 @@ object OrcFileDumpCheck {
 
         val dumpRetRdd = rdd.mapPartitions(iter => {
             val fileCorruptList = new ArrayBuffer[String]()
+
             iter.foreach(pathStr => {
-                val hdfsConf = broadcastedHadoopConf.value.value
-                // 通过初始化RecordReader检测orc文件是否损坏
-                val path = new Path(pathStr)
-                try {
-                    InnerLogger.info(InnerLogger.CHECK_MOD, s"start check file : ${pathStr} ")
-                    val reader: Reader = OrcFile.createReader(path, OrcFile.readerOptions(hdfsConf))
-                    val records: RecordReader = reader.rows()
-                    InnerLogger.info(InnerLogger.CHECK_MOD, s"end check file : ${pathStr} is ok!")
-                } catch {
-                    case ex: Exception => {
-                        fileCorruptList += pathStr
-                        InnerLogger.error(InnerLogger.CHECK_MOD, s"end check file : ${pathStr} is corrupted!")
+                if (!pathStr.contains(".COMBINE_SUCCESS")) {
+                    val hdfsConf = broadcastedHadoopConf.value.value
+                    // 通过初始化RecordReader检测orc文件是否损坏
+                    val path = new Path(pathStr)
+                    try {
+                        InnerLogger.info(InnerLogger.CHECK_MOD, s"start check file : ${pathStr} ")
+                        val reader: Reader = OrcFile.createReader(path, OrcFile.readerOptions(hdfsConf))
+                        val records: RecordReader = reader.rows()
+                        records.close()
+                        reader.close()
+                        InnerLogger.info(InnerLogger.CHECK_MOD, s"end check file : ${pathStr} is ok!")
+                    } catch {
+                        case ex: Exception => {
+                            fileCorruptList += pathStr
+                            InnerLogger.error(InnerLogger.CHECK_MOD, s"end check file : ${pathStr} is corrupted!")
+                        }
                     }
                 }
             })
@@ -85,6 +88,8 @@ object OrcFileDumpCheck {
 
     def main(args: Array[String]): Unit = {
 
+        var configuration: Configuration = getHadoopConfInShell
+
         val conf = new SparkConf()
 
         //        conf.set("spark.master", "local[1]")
@@ -99,16 +104,30 @@ object OrcFileDumpCheck {
         spark = builder.getOrCreate()
         InnerLogger.info(InnerLogger.SCHE_MOD, "Created Spark session")
 
-        val parPath = args(0)
-        // val parPath = "hdfs dfs -mv hdfs://bipcluster04/bip/developer/vipdw/dw_log_app_pageview_ds1/dt=20200104"
+        val checkCluster = args(0)
 
-        val corFileList = dumpOrcFileWithSpark(spark, parPath, 100)
+        MysqlSingleConn.init()
+        val rs = MysqlSingleConn.executeQuery(s"select location from " +
+          s"${checkCluster} where ec_status = 2 limit 1")
+
+        var corFileList = new Array[String](0)
+        var parPath = ""
+        if (rs.next()) {
+            parPath = rs.getString(1)
+            // update mysql 检测状态 clean_status=1
+            corFileList = dumpOrcFileWithSpark(spark, parPath, 100,configuration)
+        }
+
         if (corFileList.length == 0) {
-            InnerLogger.info(InnerLogger.SCHE_MOD, s"${parPath} all file is correct")
+            // update mysql 成功状态 clean_status=2
+            InnerLogger.info(InnerLogger.SCHE_MOD, s"${parPath} all file is correct !!!")
         } else {
+            // update mysql 失败状态 clean_status=7
             corFileList.toIterator.foreach(path => {
-                InnerLogger.error(InnerLogger.SCHE_MOD, s"file: ${path} is orc corrupted")
+                InnerLogger.error(InnerLogger.SCHE_MOD, s"file: ${path} is orc corrupted !!!")
             })
         }
+
+        MysqlSingleConn.close()
     }
 }
