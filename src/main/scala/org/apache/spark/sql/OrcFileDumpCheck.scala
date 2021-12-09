@@ -6,11 +6,12 @@ import org.apache.orc.{OrcFile, Reader, RecordReader}
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.{SparkConf, SparkContext}
 
+import java.io.{BufferedInputStream, File, FileInputStream}
 import scala.collection.mutable.ArrayBuffer
 
 object OrcFileDumpCheck {
 
-    var configuration: Configuration = getHadoopConf
+    var configuration: Configuration = getHadoopConfInShell
 
     // 获取子分区下的所有文件
     def getAllFilesInPath(parentPath: Path, configuration: Configuration, buffer: ArrayBuffer[Path]): Unit = {
@@ -65,6 +66,7 @@ object OrcFileDumpCheck {
         dumpRetRdd.collect()
     }
 
+    /** for test */
     def getHadoopConf(): Configuration = {
         val conf = new Configuration()
         conf.addResource("hdfs-site.xml")
@@ -72,12 +74,24 @@ object OrcFileDumpCheck {
         conf
     }
 
+    /** for online */
+    def getHadoopConfInShell(): Configuration = {
+        val dir = "/home/vipshop/conf/"
+        val conf = new Configuration()
+        conf.addResource(dir + "hdfs-site.xml")
+        conf.addResource(dir + "core-site.xml")
+        conf
+    }
+
     def main(args: Array[String]): Unit = {
 
         val conf = new SparkConf()
 
-        conf.set("spark.master", "local[1]")
-          .setAppName("OrcFileDumpTest")
+        //        conf.set("spark.master", "local[1]")
+        //          .setAppName("OrcFileDumpTest")
+        conf.set("spark.master", "yarn")
+          .set("spark.submit.deployMode", "client")
+          .setAppName("OrcFileDumpCheck")
 
 
         val builder = SparkSession.builder().config(conf)
@@ -85,9 +99,10 @@ object OrcFileDumpCheck {
         spark = builder.getOrCreate()
         InnerLogger.info(InnerLogger.SCHE_MOD, "Created Spark session")
 
-        val parPath = "hdfs://bipnormal/user/muskluo"
+        val parPath = args(0)
+        // val parPath = "hdfs dfs -mv hdfs://bipcluster04/bip/developer/vipdw/dw_log_app_pageview_ds1/dt=20200104"
 
-        val corFileList = dumpOrcFileWithSpark(spark, parPath, 5)
+        val corFileList = dumpOrcFileWithSpark(spark, parPath, 100)
         if (corFileList.length == 0) {
             InnerLogger.info(InnerLogger.SCHE_MOD, s"${parPath} all file is correct")
         } else {
