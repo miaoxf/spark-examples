@@ -15,9 +15,9 @@ import org.apache.orc.impl.OrcAcidUtils
 import org.apache.orc.tools.FileDump
 import org.apache.spark.SparkException
 import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
-import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
 import org.apache.spark.sql.JobType.{DB_NAME, JobType, MID_DT_LOCATION, MID_TBL_NAME, Record}
 import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, INIT_CODE, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, SUCCESS_FILE_MISSING, defaultMySQLConfig}
+import org.apache.spark.sql.OrcFileDumpCheck.dumpOrcFileWithSpark
 import org.apache.spark.sql.catalyst.QueryPlanningTracker
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAlias, UnresolvedAttribute}
 import org.apache.spark.sql.catalyst.expressions.{Ascending, SortOrder}
@@ -649,7 +649,8 @@ object EcAndFileCombine {
 
   def main(args: Array[String]): Unit = {
     // $SPARK_HOME/bin/spark-submit --class org.apache.spark.sql.EcAndFileCombine ./ec-with-dep3.jar
-    initParamsV2(args)
+    //initParamsV2(args)
+    initParams(args)
     val executor = new EcAndFileCombine
     if (onlineTestMode) {
       // for test
@@ -861,12 +862,14 @@ class EcAndFileCombine {
       val workSchema = s"hdfs dfs -cat ${successFileLocation}".!!
       // todo 如果读取失败？
       val successSchema: java.util.HashMap[String, String] = mapper.readValue(workSchema, classOf[java.util.HashMap[String, String]])
-      /**
+
       jobType match {
         case JobType.ec =>
           InnerLogger.debug(InnerLogger.CHECK_MOD, "this is an ec job...")
           val inputFormat = successSchema.get(INPUT_FORMAT)
           val outputFormat = successSchema.get(OUTPUT_FORMAT)
+          val totalFileCount = successSchema.get(COMBINED_FILE_NUMS).toLong
+          val orcCheckPara = (totalFileCount/100).toInt
           if (!enableGobalSplitFlow && ORC_INPUT_FORMAT.equalsIgnoreCase(inputFormat)
             && ORC_OUTPUT_FORMAT.equalsIgnoreCase(outputFormat)) {
             // execute orc file dump
@@ -874,12 +877,25 @@ class EcAndFileCombine {
 
             val toDumpPath = successSchema.get(MID_DT_LOCATION)
             if (enableOrcDumpWithSpark) {
-              val bool = dumpOrcFileWithSpark(spark, toDumpPath)
+              // val bool = dumpOrcFileWithSpark(spark, toDumpPath)
+              val corFileList = dumpOrcFileWithSpark(spark, toDumpPath, orcCheckPara)
+              if (corFileList.length == 0) {
+                InnerLogger.info(InnerLogger.SCHE_MOD, s"${toDumpPath} all file is correct")
+              } else {
+                MysqlSingleConn.updateStatus(jobType.mysqlStatus, ORC_DUMP_FAILED, successSchema.get(MYSQL_ID).toInt)
+                InnerLogger.error(InnerLogger.CHECK_MOD, s"dump orc file[${toDumpPath}] failed!")
+                corFileList.toIterator.foreach(path => {
+                  InnerLogger.error(InnerLogger.SCHE_MOD, s"file: ${path} is orc corrupted")
+                })
+                throw new RuntimeException(s"dump orc file failed!")
+              }
+              /**
               if (!bool) {
                 MysqlSingleConn.updateStatus(jobType.mysqlStatus, ORC_DUMP_FAILED, successSchema.get(MYSQL_ID).toInt)
                 InnerLogger.error(InnerLogger.CHECK_MOD, s"dump orc file[${toDumpPath}] failed!")
                 throw new RuntimeException(s"dump orc file failed!")
               }
+              **/
             } else {
               val dumpCmd = s"hive --orcfiledump ${toDumpPath}"
               runCmd(dumpCmd, successSchema.get(MYSQL_ID), InnerLogger.CHECK_MOD, ORC_DUMP_FAILED)
@@ -889,7 +905,7 @@ class EcAndFileCombine {
         case JobType.fileCombine =>
           InnerLogger.debug(InnerLogger.CHECK_MOD, "this is a fileCombine job...")
       }
-      **/
+
 
       // change dir of source and mid
       // 删除success file
@@ -1059,7 +1075,7 @@ class EcAndFileCombine {
        |select group_concat(t.id) from (select id from ${targetMysqlTable}
        |    where ${jobType.mysqlStatus} = 0
        |    ${if (onlyHandleOneLevelPartition) "and " + jobType.numPartitions + " <= 1" else " "}
-       |    ${if (targetTableToEcOrCombine != null) " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
+       |    ${if (targetTableToEcOrCombine != null && targetTableToEcOrCombine != "") " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
        |    ${if (enableFileCountOrder && enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "}
        |    ${if (enableFileCountOrder) "order by split_flow_status " else " "}
        |    ${if (!enableFileCountOrder && enableFileSizeOrder) "order by file_size " + handleFileSizeOrder else " "}
@@ -1117,7 +1133,7 @@ class EcAndFileCombine {
     s"""
        |select id,db_name,tbl_name,location,first_partition,${jobType.mysqlStatus},path_cluster,dt,file_size
        |    from ${targetMysqlTable} where ${if (!onlineTestMode) jobType.mysqlStatus + " = 1 and " else " "} id in (${ids})
-       |    ${if (targetTableToEcOrCombine != null) " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
+       |    ${if (targetTableToEcOrCombine != null && targetTableToEcOrCombine != "") " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
        |    ${if (enableFileCountOrder && enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "};
        |""".stripMargin
     InnerLogger.debug(InnerLogger.ENCAP_MOD, s"sql to get datasource: ${getDatasourceSql}")
@@ -1284,7 +1300,7 @@ class EcAndFileCombine {
         .set("spark.hadoop.hive.exec.dynamic.partition", "true")
         .set("spark.hadoop.hive.exec.dynamic.partition.mode", "nostrick")
         .set("spark.hadoop.hive.exec.max.dynamic.partitions", "2000")
-        .set("spark.yarn.archive", "hdfs://bipcluster/dp/spark/spark-lib-3.0.1-ec.jar")
+        // .set("spark.yarn.archive", "hdfs://bipcluster/dp/spark/spark-lib-3.0.1-ec.jar")
         .setSparkHome(sparkHomePath)
         .setAppName(sparkApplicationName)
     }
@@ -2013,6 +2029,7 @@ object InnerUtils {
   var configuration: Configuration = getHadoopConf
 
   /** 分布式dump orc file */
+  /**
   def dumpOrcFileWithSpark(spark: SparkSession, parentPath: String,
                            parallelism: Int = 500, dumpWithCommand: Boolean = true): Boolean = {
     val path = new Path(parentPath)
@@ -2104,6 +2121,7 @@ object InnerUtils {
     val booleans: Array[Boolean] = dumpRetRdd.collect()
     !booleans.contains(false)
   }
+  **/
 
   def getAllFilesInPath(parentPath: Path, configuration: Configuration, buffer: ArrayBuffer[Path]): Unit = {
     val fileSystem = parentPath.getFileSystem(configuration)

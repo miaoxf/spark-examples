@@ -2,7 +2,7 @@ package org.apache.spark.sql
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.EcAndFileCombine.{loadJars, sparkApplicationName, sparkHomePath}
-import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
+// import org.apache.spark.sql.InnerUtils.dumpOrcFileWithSpark
 
 import java.io.File
 
@@ -35,6 +35,6 @@ object OrcFileDump {
     var parallelism = 500
     if (args.size > 0) path = args(0)
     if (args.size > 1) parallelism = args(1).toInt
-    println("dump result: " + dumpOrcFileWithSpark(spark, path, parallelism))
+    // println("dump result: " + dumpOrcFileWithSpark(spark, path, parallelism))
   }
 }
