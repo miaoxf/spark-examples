@@ -3,6 +3,7 @@ package org.apache.spark.sql
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.orc.{OrcFile, Reader, RecordReader}
+import org.apache.spark.sql.MysqlSingleConn.getConnection
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.{SparkConf, SparkContext}
 
@@ -69,6 +70,19 @@ object OrcFileDumpCheck {
         dumpRetRdd.collect()
     }
 
+    def updateStatus(checkCluster: String,status: String, value: Any, recordId: Int): Int = {
+
+        val statement = getConnection.createStatement()
+        val sql =
+            s"""
+               |update ${checkCluster} set ${status} = ${value.toString}
+               |  where id = ${recordId}
+               |""".stripMargin
+
+        InnerLogger.debug("update-mysql", s"execute sql ${sql}")
+        statement.executeUpdate(sql)
+    }
+
     /** for test */
     def getHadoopConf(): Configuration = {
         val conf = new Configuration()
@@ -105,24 +119,36 @@ object OrcFileDumpCheck {
         InnerLogger.info(InnerLogger.SCHE_MOD, "Created Spark session")
 
         val checkCluster = args(0)
+        val checkSize = if (args.size > 1) args(1).toInt else 2
 
         MysqlSingleConn.init()
-        val rs = MysqlSingleConn.executeQuery(s"select location from " +
-          s"${checkCluster} where ec_status = 2 limit 1")
+        val rs = MysqlSingleConn.executeQuery(s"select id,location,file_count from " +
+          s"${checkCluster} where ec_status = 2 and clean_status = 0 limit ${checkSize}")
 
         var corFileList = new Array[String](0)
         var parPath = ""
+        var id: Int = -1
+        var fileCount: Int = 1
+        var paral: Int = 1
+
         if (rs.next()) {
-            parPath = rs.getString(1)
+            id = rs.getInt(1)
+            parPath = rs.getString(2)
+            fileCount = rs.getInt(3)
+            paral = fileCount/100 + 1
+
             // update mysql 检测状态 clean_status=1
-            corFileList = dumpOrcFileWithSpark(spark, parPath, 100,configuration)
+//            updateStatus(checkCluster,)
+            corFileList = dumpOrcFileWithSpark(spark, parPath, paral,configuration)
         }
 
         if (corFileList.length == 0) {
             // update mysql 成功状态 clean_status=2
+
             InnerLogger.info(InnerLogger.SCHE_MOD, s"${parPath} all file is correct !!!")
         } else {
             // update mysql 失败状态 clean_status=7
+            // MysqlSingleConn.updateQuery(failedSql)
             corFileList.toIterator.foreach(path => {
                 InnerLogger.error(InnerLogger.SCHE_MOD, s"file: ${path} is orc corrupted !!!")
             })
