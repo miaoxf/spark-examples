@@ -50,12 +50,12 @@ object OrcFileDumpCheck {
                     // 通过初始化RecordReader检测orc文件是否损坏
                     val path = new Path(pathStr)
                     try {
-                        InnerLogger.info(InnerLogger.CHECK_MOD, s"start check file : ${pathStr} ")
+                        // InnerLogger.debug(InnerLogger.CHECK_MOD, s"start check file : ${pathStr} ")
                         val reader: Reader = OrcFile.createReader(path, OrcFile.readerOptions(hdfsConf))
                         val records: RecordReader = reader.rows()
                         records.close()
                         reader.close()
-                        InnerLogger.info(InnerLogger.CHECK_MOD, s"end check file : ${pathStr} is ok!")
+                        // InnerLogger.debug(InnerLogger.CHECK_MOD, s"end check file : ${pathStr} is ok!")
                     } catch {
                         case ex: Exception => {
                             fileCorruptList += pathStr
