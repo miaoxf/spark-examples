@@ -131,7 +131,7 @@ object RepartitionIntervene {
     resBuffer
   }
 
-  private implicit class StructFieldEnhance(val f: StructField) {
+  implicit class StructFieldEnhance(val f: StructField) {
     var size: Long = 0
     override def toString: String = s"StructField(${f.name},${f.dataType},${f.nullable},${size})"
     def enhance(size: Long): StructFieldEnhance = {
