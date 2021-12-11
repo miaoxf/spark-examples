@@ -32,7 +32,7 @@ ${SPARK_HOME_IN_SCRIPT}/bin/spark-shell \
     println("SampleLargeColumn", "start to sample rdd...")
 
     import scala.collection.mutable.ArrayBuffer
-    import org.apache.spark.sql.types.StructField
+    import org.apache.spark.sql.types.{StringType, StructField}
     implicit class StructFieldEnhance(val f: StructField) {
       var size: Long = 0
       override def toString: String = s"StructField(\${f.name},\${f.dataType},\${f.nullable},\${size})"
@@ -41,15 +41,6 @@ ${SPARK_HOME_IN_SCRIPT}/bin/spark-shell \
         enhance.size = size
         enhance
       }
-    }
-
-    def excludeFieldsNotString(potentialFields: Seq[StructFieldEnhance]): Seq[StructFieldEnhance] = {
-      potentialFields.filter(sf => {
-        sf.f.dataType match {
-          case StringType => true
-          case _ => false
-        }
-      })
     }
 
     val zipRdd = sampleRdd.map(row => {
@@ -93,5 +84,7 @@ ${SPARK_HOME_IN_SCRIPT}/bin/spark-shell \
     })
 
     println("sort with total size: " + final.toString())
+
+    println("sort with total size: " + resBuffer.toString())
 
 EOF
