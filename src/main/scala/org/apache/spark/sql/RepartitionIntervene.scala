@@ -3,7 +3,7 @@ package org.apache.spark.sql
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.EcAndFileCombine.{loadJars, sparkHomePath}
-import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.types.{StringType, StructField, StructType}
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -47,18 +47,29 @@ object RepartitionIntervene {
     if (ret.isEmpty) "" else ret.mkString(",")
   }
 
+
+  def excludeFieldsNotString(potentialFields: Seq[StructFieldEnhance]): Seq[StructFieldEnhance] = {
+    potentialFields.filter(sf => {
+      sf.f.dataType match {
+        case StringType => true
+        case _ => false
+      }
+    })
+  }
+
   def estimateRepartitionField(datasource: RDD[Row], fraction: Double = 0.01): Seq[String] = {
     val sampleRdd = datasource.sample(true, fraction).cache()
     import scala.collection.mutable.ArrayBuffer
     // rule1: estimate and get suitable fields as much as possible
-    val potentialFields = estimateFieldsByTotalSize(sampleRdd)
+    val potentialFields: Seq[StructFieldEnhance] = estimateFieldsByTotalSize(sampleRdd)
 
-    // rule2:
+    // rule2: exclude fields which type are not string
+    val stringFields: Seq[StructFieldEnhance] = excludeFieldsNotString(potentialFields)
 
     // rule3: exclude fields which are nearly all distinct values, but
     // we can retain one of those in `potentialFields`, which is used to
     // distribute data more evenly.
-    val finalFields = excludeOrRetainFields(sampleRdd, potentialFields)
+    val finalFields = excludeOrRetainFields(sampleRdd, stringFields)
     finalFields.map(_.f.name)
   }
 
@@ -70,8 +81,16 @@ object RepartitionIntervene {
       Seq(potentialFields(0), potentialFields(1))
     } else {
       // if size is equal to 1, abort the field, to avoid data skew
+      // todo if size is equal to 1, but there are some excluded non-string fields,
+      // we should consider those non-string fields.
       Seq()
     }
+  }
+
+  private def estimateFieldsByDistinctCount(sampleRdd: RDD[Row]): Seq[StructFieldEnhance] = {
+    // exclude field which distinct value are in majority
+    // todo
+    null
   }
 
   private def estimateFieldsByTotalSize(sampleRdd: RDD[Row]): Seq[StructFieldEnhance] = {
