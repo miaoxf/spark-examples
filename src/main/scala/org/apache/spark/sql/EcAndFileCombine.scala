@@ -9,30 +9,19 @@ package org.apache.spark.sql
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
-import org.apache.hadoop.hdfs.DistributedFileSystem
-import org.apache.orc.{OrcFile, Reader}
-import org.apache.orc.impl.OrcAcidUtils
-import org.apache.orc.tools.FileDump
 import org.apache.spark.SparkException
 import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
 import org.apache.spark.sql.InnerUtils.configuration
 import org.apache.spark.sql.JobType.{DB_NAME, JobType, MID_DT_LOCATION, MID_TBL_NAME, Record}
 import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, INIT_CODE, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, SUCCESS_FILE_MISSING, defaultMySQLConfig}
 import org.apache.spark.sql.OrcFileDumpCheck.dumpOrcFileWithSpark
-import org.apache.spark.sql.catalyst.QueryPlanningTracker
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedAlias, UnresolvedAttribute}
-import org.apache.spark.sql.catalyst.expressions.{Ascending, SortOrder}
 import org.apache.spark.sql.internal.SQLConf.PartitionOverwriteMode
-import org.apache.spark.util.SerializableConfiguration
 import org.codehaus.jackson.map.ObjectMapper
 
 import java.io.{BufferedInputStream, File, FileInputStream}
-import java.lang.reflect.Method
-import java.net.{URL, URLClassLoader}
 import java.sql.{Connection, DriverManager, ResultSet}
 import java.text.SimpleDateFormat
-import java.util
-import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 import java.util.stream.Collectors
 import java.util.{Date, Locale, Properties, UUID, stream}
@@ -2028,101 +2017,6 @@ class EcAndFileCombine {
 // /home/vipshop/platform/spark-3.0.1/jars/woodstox-core-5.0.3.jar
 object InnerUtils {
   var configuration: Configuration = getHadoopConf
-
-  /** 分布式dump orc file */
-  /**
-  def dumpOrcFileWithSpark(spark: SparkSession, parentPath: String,
-                           parallelism: Int = 500, dumpWithCommand: Boolean = true): Boolean = {
-    val path = new Path(parentPath)
-    val fileInPath = new ArrayBuffer[Path]()
-    getAllFilesInPath(path, configuration, fileInPath)
-    println("fileInPath" + fileInPath.mkString(","))
-    val allFiles = fileInPath.map(_.getName)
-    val rdd = spark.sparkContext.makeRDD(allFiles, parallelism)
-    val broadcastedHadoopConf =
-      spark.sparkContext.broadcast(new SerializableConfiguration(configuration))
-    val dumpRetRdd = rdd.mapPartitions(iter => {
-      val corruptFiles = new java.util.ArrayList[String]()
-      // 接受广播变量configuration
-      val conf = broadcastedHadoopConf.value.value
-      iter.foreach(pathStr => {
-        // todo dump orc file
-        // if (s"hive --orcfiledump ${path}".! != 0) dumpRet = false
-
-        val path = new Path(pathStr)
-        val fs = path.getFileSystem(conf)
-        val dataFileLen = fs.getFileStatus(path).getLen()
-        val sideFile = OrcAcidUtils.getSideFile(path)
-        val sideFileExists = fs.exists(sideFile)
-        var openDataFile = false
-        var openSideFile = false
-        var reader: DistributedFileSystem = null
-
-        if (fs.isInstanceOf[DistributedFileSystem]) {
-          reader = fs.asInstanceOf[DistributedFileSystem]
-          openDataFile = !reader.isFileClosed(path)
-          openSideFile = sideFileExists && !reader.isFileClosed(sideFile)
-        }
-
-        if (!openDataFile && !openSideFile) {
-          // reader = null
-          var reader: Reader = null
-          if (sideFileExists) {
-            val maxLen = OrcAcidUtils.getLastFlushLength(fs, path)
-            val sideFileLen = fs.getFileStatus(sideFile).getLen()
-            // System.err.println("Found flush length file " + sideFile + " [length: " + sideFileLen + ", maxFooterOffset: " + maxLen + "]");
-            if (maxLen == -1L) {
-              if (dataFileLen > maxLen) {
-                // System.err.println("Data file has more data than max footer offset:" + maxLen + ". Adding data file to recovery list.");
-                if (corruptFiles != null) {
-                  corruptFiles.add(path.toUri().toString())
-                }
-              }
-
-              // return null
-            }
-
-            try {
-              reader = OrcFile.createReader(path, OrcFile.readerOptions(conf).maxLength(maxLen))
-              if (dataFileLen > maxLen) {
-                // System.err.println("Data file has more data than max footer offset:" + maxLen + ". Adding data file to recovery list.");
-                if (corruptFiles != null) {
-                  corruptFiles.add(path.toUri().toString())
-                }
-              }
-            } catch {
-              case e: Exception =>
-                if (corruptFiles != null) {
-                  corruptFiles.add(path.toUri().toString())
-                }
-                // System.err.println("Unable to read data from max footer offset. Adding data file to recovery list.");
-                // return null
-            }
-          } else {
-            reader = OrcFile.createReader(path, OrcFile.readerOptions(conf))
-          }
-
-          // return reader
-
-        } else {
-          if (openDataFile && openSideFile) {
-            System.err.println("Unable to perform file dump as " + path + " and " + sideFile + " are still open for writes.");
-          } else if (openSideFile) {
-            System.err.println("Unable to perform file dump as " + sideFile + " is still open for writes.");
-          } else {
-            System.err.println("Unable to perform file dump as " + path + " is still open for writes.");
-          }
-          // return null
-        }
-
-
-      })
-      Seq(corruptFiles.size() == 0).toIterator
-    })
-    val booleans: Array[Boolean] = dumpRetRdd.collect()
-    !booleans.contains(false)
-  }
-  **/
 
   def getAllFilesInPath(parentPath: Path, configuration: Configuration, buffer: ArrayBuffer[Path]): Unit = {
     val fileSystem = parentPath.getFileSystem(configuration)

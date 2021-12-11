@@ -4,9 +4,8 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.orc.{OrcFile, Reader, RecordReader}
 import org.apache.spark.util.SerializableConfiguration
-import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.SparkConf
 
-import java.io.{BufferedInputStream, File, FileInputStream}
 import scala.collection.mutable.ArrayBuffer
 
 object OrcFileDumpCheck {
