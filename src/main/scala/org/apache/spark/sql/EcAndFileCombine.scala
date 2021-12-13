@@ -1066,8 +1066,8 @@ class EcAndFileCombine {
        |    where ${jobType.mysqlStatus} = 0
        |    ${if (onlyHandleOneLevelPartition) "and " + jobType.numPartitions + " <= 1" else " "}
        |    ${if (targetTableToEcOrCombine != null && targetTableToEcOrCombine != "") " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
-       |    ${if (enableFileCountOrder && enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "}
-       |    ${if (enableFileCountOrder) "order by split_flow_status " else " "}
+       |    ${if (!enableFileCountOrder && enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "}
+       |    ${if (enableFileCountOrder) "order by file_count_old desc " else " "}
        |    ${if (!enableFileCountOrder && enableFileSizeOrder) "order by file_size " + handleFileSizeOrder else " "}
        |    limit ${targetBatchSize}) t
        |""".stripMargin
@@ -1124,7 +1124,7 @@ class EcAndFileCombine {
        |select id,db_name,tbl_name,location,first_partition,${jobType.mysqlStatus},path_cluster,dt,file_size
        |    from ${targetMysqlTable} where ${if (!onlineTestMode) jobType.mysqlStatus + " = 1 and " else " "} id in (${ids})
        |    ${if (targetTableToEcOrCombine != null && targetTableToEcOrCombine != "") " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
-       |    ${if (enableFileCountOrder && enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "};
+       |    ${if (!enableFileCountOrder && enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "};
        |""".stripMargin
     InnerLogger.debug(InnerLogger.ENCAP_MOD, s"sql to get datasource: ${getDatasourceSql}")
     val rs = MysqlSingleConn.executeQuery(getDatasourceSql)
@@ -1714,14 +1714,20 @@ class EcAndFileCombine {
         // Coalesce方式也要修改通过静态分区方式
         // 修改分区数
         // 并发执行子分区
-        var syncInsertSize = 5
-        var syncInsertSizeMax = 5
+        var syncInsertSize = 1
+        var syncInsertSizeMax = 1
 
         if (onlyCoalesce || initFileNums == defaultParallelism.toLong) {
-          val insertPool: ThreadPoolExecutor = new ThreadPoolExecutor(syncInsertSize,syncInsertSizeMax,
-            10000L, TimeUnit.MILLISECONDS,new LinkedBlockingQueue[Runnable])
-          // 特定场景下可以改为coalesce，避免shuffle。
-          scheduleFineGrainedJob(locationToStaticPartitionSql, insertPool, false)
+          if (!enableFineGrainedInsertion) {
+            insertSql = insertSql.replace("repartition", "coalesce")
+            InnerLogger.info(InnerLogger.SPARK_MOD, s"start to execute insertion with coalesce: spark.sql(${insertSql})")
+            spark.sql(insertSql)
+          } else {
+            val insertPool: ThreadPoolExecutor = new ThreadPoolExecutor(syncInsertSize,syncInsertSizeMax,
+              10000L, TimeUnit.MILLISECONDS,new LinkedBlockingQueue[Runnable])
+            // 特定场景下可以改为coalesce，避免shuffle。
+            scheduleFineGrainedJob(locationToStaticPartitionSql, insertPool, false)
+          }
         } else if (enableFineGrainedInsertion && allStaticPartition) {
           // 可以找到所有的静态分区，按照最细粒度合并
           // 动态分区仍然开启，通过动态分区的方式insert，但是overwrite模式改成动态的!
