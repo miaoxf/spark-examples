@@ -44,7 +44,9 @@ object RepartitionIntervene {
 
   def getEstimateRepartitionFieldStr(datasource: RDD[Row], fraction: Double = 0.01): String = {
     val ret = estimateRepartitionField(datasource, fraction)
-    if (ret.isEmpty) "" else ret.mkString(",")
+    val retStr = if (ret.isEmpty) "" else ret.mkString(",")
+    InnerLogger.info("getEstimateRepartitionFieldStr", retStr)
+    retStr
   }
 
 
@@ -76,7 +78,8 @@ object RepartitionIntervene {
   private def excludeOrRetainFields(sampleRdd: RDD[Row], potentialFields: Seq[StructFieldEnhance]): Seq[StructFieldEnhance] = {
     // todo
     if (potentialFields.size >= 3) {
-      Seq(potentialFields(0), potentialFields(1), potentialFields(2))
+      // todo potentialFields(1).size >= 1.5 * potentialFields(2).size
+      Seq(potentialFields(0), potentialFields(1))
     } else if (potentialFields.size >= 2) {
       Seq(potentialFields(0), potentialFields(1))
     } else {
@@ -127,7 +130,7 @@ object RepartitionIntervene {
     }
 
     // StructType(Seq(maxSizeField, maxSizeField2, maxSizeField3))
-    InnerLogger.info("sort with total size", resBuffer.toString())
+    InnerLogger.debug("sort with total size(non-string field not excluded now)", resBuffer.toString())
     resBuffer
   }
 

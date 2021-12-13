@@ -360,6 +360,7 @@ object EcAndFileCombine {
   var shutdownSparkContextForcely = false
   var enableMaxRecordsPerFile: Boolean = false
   var fileCombineThreshold: Long = _
+  var enableStrictCompression: Boolean = false
   var testMode: Boolean = false
   val sdf = new SimpleDateFormat("yyyyMMdd")
   var splitFlowLevel: Int = 1
@@ -578,6 +579,7 @@ object EcAndFileCombine {
     splitFlowLevel = if (args.size > 23) args(23).toInt else 1
     enableOrcDumpWithSpark = if (args.size > 24) args(24).toBoolean else false
     fileCombineThreshold = if (args.size > 25) args(25).toLong else 104857600
+    enableStrictCompression = if (args.size > 26) args(26).toBoolean else false
   }
 
   def initParamsV2(params: Array[String]): Unit = {
@@ -1674,6 +1676,7 @@ class EcAndFileCombine {
             s"parallelism:${parallelism}")
           if (parallelism > 0) {
             if (isShuffle) {
+              spark.conf.set("orc.stripe.size", "1073741824")
               fineInsertSql = s"insert overwrite table " + dbName + "." + midTblName +
                 s" partition (${location2Sql._3}) " +
                 s"select /*+ repartition(${parallelism}${repartitionIntervene(fineViewName)}) */ * from " + fineViewName
@@ -1714,15 +1717,15 @@ class EcAndFileCombine {
         // Coalesce方式也要修改通过静态分区方式
         // 修改分区数
         // 并发执行子分区
-        var syncInsertSize = 5
-        var syncInsertSizeMax = 5
+        var syncInsertSize = 1
+        var syncInsertSizeMax = 1
 
-        if (onlyCoalesce || initFileNums == defaultParallelism.toLong) {
+        if (!enableStrictCompression && (onlyCoalesce || initFileNums == defaultParallelism.toLong)) {
           val insertPool: ThreadPoolExecutor = new ThreadPoolExecutor(syncInsertSize,syncInsertSizeMax,
             10000L, TimeUnit.MILLISECONDS,new LinkedBlockingQueue[Runnable])
           // 特定场景下可以改为coalesce，避免shuffle。
           scheduleFineGrainedJob(locationToStaticPartitionSql, insertPool, false)
-        } else if (enableFineGrainedInsertion && allStaticPartition) {
+        } else if (enableStrictCompression || (enableFineGrainedInsertion && allStaticPartition)) {
           // 可以找到所有的静态分区，按照最细粒度合并
           // 动态分区仍然开启，通过动态分区的方式insert，但是overwrite模式改成动态的!
           // 改repartition注意共享变量
