@@ -1677,7 +1677,10 @@ class EcAndFileCombine {
           if (parallelism > 0) {
             if (isShuffle) {
               parallelism = Math.ceil(totalSize.toLong / maxPartitionBytes.toLong).toLong
-              spark.conf.set("orc.stripe.size", "1073741824")
+              val stripeSize =
+                if (maxPartitionBytes.toLong * 3 < 1073741824L) 1073741824L
+                else maxPartitionBytes.toLong * 3
+              spark.conf.set("orc.stripe.size", stripeSize.toString)
               fineInsertSql = s"insert overwrite table " + dbName + "." + midTblName +
                 s" partition (${location2Sql._3}) " +
                 s"select /*+ repartition(${parallelism}${repartitionIntervene(fineViewName)}) */ * from " + fineViewName
