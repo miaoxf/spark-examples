@@ -1077,7 +1077,6 @@ class EcAndFileCombine {
        |    where ${jobType.mysqlStatus} = 0
        |    ${if (onlyHandleOneLevelPartition) "and " + jobType.numPartitions + " <= 1" else " "}
        |    ${if (targetTableToEcOrCombine != null && targetTableToEcOrCombine != "") " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
-       |    ${if (!enableFileCountOrder && enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "}
        |    ${if (enableFileCountOrder) "order by file_count_old desc " else " "}
        |    ${if (!enableFileCountOrder && enableFileSizeOrder) "order by file_size " + handleFileSizeOrder else " "}
        |    limit ${targetBatchSize}) t
@@ -1134,9 +1133,7 @@ class EcAndFileCombine {
     s"""
        |select id,db_name,tbl_name,location,first_partition,${jobType.mysqlStatus},path_cluster,dt,file_size
        |    from ${targetMysqlTable} where ${if (!onlineTestMode) jobType.mysqlStatus + " = 1 and " else " "} id in (${ids})
-       |    ${if (targetTableToEcOrCombine != null && targetTableToEcOrCombine != "") " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
-       |    ${if (!enableFileCountOrder && enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "};
-       |""".stripMargin
+       |    ${if (targetTableToEcOrCombine != null && targetTableToEcOrCombine != "") " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}       |""".stripMargin
     InnerLogger.debug(InnerLogger.ENCAP_MOD, s"sql to get datasource: ${getDatasourceSql}")
     val rs = MysqlSingleConn.executeQuery(getDatasourceSql)
     while (rs.next()) {
