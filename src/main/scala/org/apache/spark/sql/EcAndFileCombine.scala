@@ -871,7 +871,7 @@ class EcAndFileCombine {
           val outputFormat = successSchema.get(OUTPUT_FORMAT)
           val totalFileCount = successSchema.get(COMBINED_FILE_NUMS).toLong
           val orcCheckPara = (totalFileCount/100).toInt + 1
-          if (!enableGobalSplitFlow && ORC_INPUT_FORMAT.equalsIgnoreCase(inputFormat)
+          if (ORC_INPUT_FORMAT.equalsIgnoreCase(inputFormat)
             && ORC_OUTPUT_FORMAT.equalsIgnoreCase(outputFormat)) {
             // execute orc file dump
             InnerLogger.debug(InnerLogger.CHECK_MOD, s"this is an ec job,start to dump orc file[${successSchema.get(MID_DT_LOCATION)}]...")
