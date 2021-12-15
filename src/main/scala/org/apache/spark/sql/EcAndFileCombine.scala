@@ -1683,7 +1683,7 @@ class EcAndFileCombine {
               spark.conf.set("orc.stripe.size", stripeSize.toString)
               fineInsertSql = s"insert overwrite table " + dbName + "." + midTblName +
                 s" partition (${location2Sql._3}) " +
-                s"select /*+ repartition(${parallelism}${repartitionIntervene(fineViewName)}) */ * from " + fineViewName
+                s"select /*+ ${repartitionOrCoalesce(parallelism.toString, fineViewName)} */ * from " + fineViewName
             } else {
               fineInsertSql = s"insert overwrite table " + dbName + "." + midTblName +
                 s" partition (${location2Sql._3}) " +
@@ -1707,6 +1707,17 @@ class EcAndFileCombine {
           }
         } else {
           InnerLogger.warn(InnerLogger.SPARK_MOD, s"fineGrainedLocation[${fineGrainedLocation}] did not exist!")
+        }
+      }
+
+      def repartitionOrCoalesce(parallelism: String, sourceName: String): String = {
+        val repartitionFields = repartitionIntervene(sourceName)
+        if (repartitionFields.isEmpty) {
+          InnerLogger.info(InnerLogger.SPARK_MOD, "StrictCompressionPolicy choose coalesce policy")
+          s"coalesce(${parallelism})"
+        } else {
+          InnerLogger.info(InnerLogger.SPARK_MOD, "StrictCompressionPolicy choose repartition policy")
+          s"repartition(${parallelism}${repartitionFields})"
         }
       }
 
