@@ -63,7 +63,7 @@ object RepartitionIntervene {
     val sampleRdd = datasource.sample(true, fraction).cache()
     import scala.collection.mutable.ArrayBuffer
     // rule1: estimate and get suitable fields as much as possible
-    val potentialFields: Seq[StructFieldEnhance] = estimateFieldsByTotalSize(sampleRdd)
+    val (potentialFields, schema) = estimateFieldsByTotalSize(sampleRdd)
 
     // rule2: exclude fields which type are not string
     val stringFields: Seq[StructFieldEnhance] = excludeFieldsNotString(potentialFields)
@@ -71,14 +71,47 @@ object RepartitionIntervene {
     // rule3: exclude fields which are nearly all distinct values, but
     // we can retain one of those in `potentialFields`, which is used to
     // distribute data more evenly.
-    val finalFields = excludeOrRetainFields(sampleRdd, stringFields)
+    val nonDistinctMostly = ifDistinctMostly(sampleRdd, schema, stringFields)
+    val finalFields = excludeOrRetainFields(sampleRdd, nonDistinctMostly)
     finalFields.map(_.f.name)
   }
 
+  private def ifDistinctMostly(sampleRdd: RDD[Row],
+                               schema: StructType,
+                               potentialFields: Seq[StructFieldEnhance]): Seq[StructFieldEnhance] = {
+    if (potentialFields.size < 1) return potentialFields
+    val count = sampleRdd.count()
+
+    try {
+      potentialFields.foreach(pf => {
+        val fieldName = pf.f.name
+        val index = schema.getFieldIndex(fieldName)
+        val countOfPf1 = sampleRdd.map(_.get(index.get)).distinct().count()
+        if (countOfPf1 / count > 0.6) {
+          InnerLogger.info("StrictCompressionPolicy", s"distinct count of field:[${fieldName}] " +
+            s"is in major, so choose coalesce policy!")
+          return Seq()
+        }
+      })
+    } catch {
+      case e: Exception =>
+    }
+
+    potentialFields
+  }
+
+  private def yieldForLargeField(potentialFields: Seq[StructFieldEnhance]): Seq[StructFieldEnhance] = {
+    if (potentialFields.size < 2) return potentialFields
+    if (potentialFields(0).size >= 1.5 * potentialFields(1).size) {
+      Seq(potentialFields(0))
+    } else {
+      Seq(potentialFields(0), potentialFields(1))
+    }
+  }
+
+
   private def excludeOrRetainFields(sampleRdd: RDD[Row], potentialFields: Seq[StructFieldEnhance]): Seq[StructFieldEnhance] = {
-    // todo
     if (potentialFields.size >= 3) {
-      // todo potentialFields(1).size >= 1.5 * potentialFields(2).size
       Seq(potentialFields(0), potentialFields(1))
     } else if (potentialFields.size >= 2) {
       Seq(potentialFields(0), potentialFields(1))
@@ -96,7 +129,7 @@ object RepartitionIntervene {
     null
   }
 
-  private def estimateFieldsByTotalSize(sampleRdd: RDD[Row]): Seq[StructFieldEnhance] = {
+  private def estimateFieldsByTotalSize(sampleRdd: RDD[Row]): (Seq[StructFieldEnhance], StructType) = {
     val zipRdd = sampleRdd.map(row => {
       val buffer = new ArrayBuffer[Long]()
       for (i <- Range(0, row.length)) {
@@ -120,7 +153,7 @@ object RepartitionIntervene {
     })
 
     val resArr = res._2.toArray
-    val schema = res._1
+    val schema: StructType = res._1
     java.util.Arrays.sort(resArr)
     val resBuffer = new ArrayBuffer[StructFieldEnhance]()
     import org.apache.spark.sql.types.StructField
@@ -131,7 +164,7 @@ object RepartitionIntervene {
 
     // StructType(Seq(maxSizeField, maxSizeField2, maxSizeField3))
     InnerLogger.debug("sort with total size(non-string field not excluded now)", resBuffer.toString())
-    resBuffer
+    (resBuffer, schema)
   }
 
   implicit class StructFieldEnhance(val f: StructField) {
