@@ -22,13 +22,16 @@ ${SPARK_HOME_IN_SCRIPT}/bin/spark-shell \
 --conf 'spark.hadoop.hive.exec.dynamic.partition.mode=nostrick' \
 --conf 'spark.hadoop.hive.exec.max.dynamic.partitions=2000' \  << EOF
 
+    import org.apache.spark.rdd.RDD
+    import org.apache.spark.sql.Row
+
     val sql = "${param_sql}"
     val path = "${src_path}"
     println("path:" + path)
     spark.read.orc(path).createOrReplaceTempView("src")
 
     val fraction: Double = "${param_fraction}".toDouble
-    val sampleRdd = spark.sql(sql).toDF().rdd.sample(true, fraction)
+    val sampleRdd = spark.sql(sql).toDF().rdd.sample(true, fraction).cache()
     println("SampleLargeColumn", "start to sample rdd...")
 
     import scala.collection.mutable.ArrayBuffer
@@ -41,6 +44,31 @@ ${SPARK_HOME_IN_SCRIPT}/bin/spark-shell \
         enhance.size = size
         enhance
       }
+    }
+
+    import org.apache.spark.sql.types.{StringType, StructField, StructType}
+    private def ifDistinctMostly(sampleRdd: RDD[Row],
+                               schema: StructType,
+                               potentialFields: Seq[StructFieldEnhance]): Seq[StructFieldEnhance] = {
+      if (potentialFields.size < 1) return potentialFields
+      val count = sampleRdd.count()
+
+      try {
+        potentialFields.foreach(pf => {
+          val fieldName = pf.f.name
+          val index = schema.getFieldIndex(fieldName)
+          val countOfPf1 = sampleRdd.map(_.get(index.get)).distinct().count()
+          if (countOfPf1 / count > 0.6) {
+            println("StrictCompressionPolicy", s"distinct count of field:[${fieldName}] " +
+              s"is in major, so choose coalesce policy!")
+            return Seq()
+          }
+        })
+      } catch {
+        case e: Exception =>
+      }
+
+      potentialFields
     }
 
     val zipRdd = sampleRdd.map(row => {
@@ -76,12 +104,9 @@ ${SPARK_HOME_IN_SCRIPT}/bin/spark-shell \
       resBuffer.append(schema(res._2.indexOf(size)).enhance(size))
     }
 
-    val final = resBuffer.filter(sf => {
-      sf.f.dataType match {
-        case StringType => true
-        case _ => false
-      }
-    })
+
+
+    println("ifDistinctMostly:" + ifDistinctMostly(sampleRdd, schema, resBuffer).toString())
 
     println("sort with total size: " + final.toString())
 
