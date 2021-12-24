@@ -903,6 +903,50 @@ class EcAndFileCombine {
             }
             InnerLogger.info(InnerLogger.CHECK_MOD, s"dump orc file[${successSchema.get(MID_DT_LOCATION)}] successfully!")
           }
+          // fix 分区location与源location不一致
+          val srctbl = successSchema.get(DB_NAME) + "." + successSchema.get(TBL_NAME)
+          var firstPart = successSchema.get(FIRST_PARTITION)
+          val firstPartArr = firstPart.split("=")
+          assert(firstPartArr.size == 2)
+          firstPart = firstPartArr(0) + "='" + firstPartArr(1) + "'"
+          val firstLocation = successSchema.get(LOCATION)
+          var finePart = ""
+          val showPartitionOfSrcTblSql = s"show partitions ${srctbl} partition (${firstPart})"
+          InnerLogger.debug(InnerLogger.ENCAP_MOD, s"execute : ${showPartitionOfSrcTblSql} get FinePartition")
+          val showPartitions = spark.sql(showPartitionOfSrcTblSql).collect()
+          var onePartition = ""
+          val descTempView = "descTempView"
+          val tblLocation = successSchema.get(SOURCE_TBL_LOCATION)
+          // partitionStr = showPartitionsRows.apply(0).get(0).toString
+          // dt=20211201/hm=0000
+          showPartitions.map(partition => {
+            onePartition = partition.get(0).toString
+            val onePartitions = onePartition.split("/")
+            var buffer = new ArrayBuffer[String]()
+            for (i <- Range(0,onePartitions.size)) {
+              var part = onePartitions(i)
+              var kv = part.split("=")
+              assert(kv.size == 2)
+              buffer += kv(0) + "=" + "'" + kv(1) + "'"
+            }
+            finePart = buffer.mkString(",")
+            var descPartitionOfSrcTblSql = s"desc formatted ${srctbl} partition(${finePart})"
+            InnerLogger.debug(InnerLogger.ENCAP_MOD, s"execute : ${descPartitionOfSrcTblSql} get FinePartitionLocation")
+            val descDf = spark.sql(descPartitionOfSrcTblSql)
+            descDf.createOrReplaceTempView(descTempView)
+            InnerLogger.debug(InnerLogger.ENCAP_MOD, s"execute : [select data_type from ${descTempView} where col_name='Location'] get showLocation")
+            val showLocation = spark.sql(s"select data_type from ${descTempView} " +
+              "where col_name='Location'").collect().apply(0).get(0).toString
+            val sourceLocation = tblLocation + onePartition
+            if (!sourceLocation.equals(showLocation)) {
+              // 分区location与源location不一致
+              InnerLogger.warn(InnerLogger.ENCAP_MOD, s"source目录[${sourceLocation}]与分区目录[${showLocation}]不一致，跳过该作业!")
+              MysqlSingleConn.updateStatus(jobType.mysqlStatus, SKIP_WORK, successSchema.get(MYSQL_ID).toInt)
+              throw new RuntimeException(s"sourceLocation is different showLocation")
+            }
+            partition
+          })
+
         case JobType.fileCombine =>
           InnerLogger.debug(InnerLogger.CHECK_MOD, "this is a fileCombine job...")
       }
@@ -1441,7 +1485,7 @@ class EcAndFileCombine {
       val createMidTblSql = "create table IF NOT EXISTS " + dbName + "." + midTblName + " like " + srcTbl + " LOCATION '" + midTblLocation + "' "
       val alterTblLocation = "alter table " + dbName + "." + midTblName + " set LOCATION  '" +midTblLocation + "' "
       val dropFirstPartitionLocation = "alter table " + dbName + "." + midTblName + " drop partition (" + firstPartition + ")"
-      val showPartitionOfSrcTblSql = "show partitions " + srcTbl
+      var showPartitionOfSrcTblSql = "show partitions " + srcTbl + " partition (${partitionSql}) "
       // val partitionsInInsertSql = getPartitionsInInsertSql(getPartitionSql(partitionStr, fieldOfStaticPartition), partitionPredicate)
       val showCreateSrcTblSql = s"show create table " + srcTbl
       val descFormattedSrcSql = "desc formatted " + srcTbl
@@ -1519,6 +1563,7 @@ class EcAndFileCombine {
       var partitionStr: String = ""
       var showPartitionsRows: Array[Row] = null
       val parSql = try {
+        showPartitionOfSrcTblSql = showPartitionOfSrcTblSql.replace("${partitionSql}", partitionPredicate)
         showPartitionsRows = spark.sql(showPartitionOfSrcTblSql).collect()
         partitionStr = showPartitionsRows.apply(0).get(0).toString
         getPartitionsInInsertSql(getPartitionSql(partitionStr, fieldOfStaticPartition), partitionPredicate)
