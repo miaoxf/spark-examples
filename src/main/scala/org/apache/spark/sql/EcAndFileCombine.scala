@@ -859,7 +859,7 @@ class EcAndFileCombine {
           val inputFormat = successSchema.get(INPUT_FORMAT)
           val outputFormat = successSchema.get(OUTPUT_FORMAT)
           val totalFileCount = successSchema.get(COMBINED_FILE_NUMS).toLong
-          val orcCheckPara = (totalFileCount/100).toInt + 1
+          val orcCheckPara = (totalFileCount/10).toInt + 1
           if (ORC_INPUT_FORMAT.equalsIgnoreCase(inputFormat)
             && ORC_OUTPUT_FORMAT.equalsIgnoreCase(outputFormat)) {
             // execute orc file dump
@@ -868,17 +868,19 @@ class EcAndFileCombine {
             val toDumpPath = successSchema.get(MID_DT_LOCATION)
             if (enableOrcDumpWithSpark) {
               // val bool = dumpOrcFileWithSpark(spark, toDumpPath)
-              val corFileList = dumpOrcFileWithSpark(spark, toDumpPath, orcCheckPara, configuration)
-              if (corFileList.length == 0) {
-                InnerLogger.info(InnerLogger.SCHE_MOD, s"${toDumpPath} all file is correct")
-              } else {
-                MysqlSingleConn.updateStatus(jobType.mysqlStatus, ORC_DUMP_FAILED, successSchema.get(MYSQL_ID).toInt)
-                InnerLogger.error(InnerLogger.CHECK_MOD, s"dump orc file[${toDumpPath}] failed!")
-                corFileList.toIterator.foreach(path => {
-                  InnerLogger.error(InnerLogger.SCHE_MOD, s"file: ${path} is orc corrupted")
-                })
-                throw new RuntimeException(s"dump orc file failed!")
+              try {
+                dumpOrcFileWithSpark(spark, toDumpPath, orcCheckPara, configuration)
+              } catch {
+                case ex: Exception => {
+                  val msg = if (ex.getCause == null) ex.getMessage + "\n" + ex.getClass + "\n" + ex.getStackTrace.mkString("\n")
+                  else ex.getMessage + "\n" + ex.getClass + "\n" + ex.getStackTrace.mkString("\n") + "\n" + ex.getCause.toString
+                  InnerLogger.error(InnerLogger.CHECK_MOD, s"dump orc file[${toDumpPath}] failed! corrupted reason:\n${msg}")
+                  MysqlSingleConn.updateStatus(jobType.mysqlStatus, ORC_DUMP_FAILED, successSchema.get(MYSQL_ID).toInt)
+                  throw new RuntimeException(s"dump orc file failed!")
+                }
               }
+              InnerLogger.info(InnerLogger.SCHE_MOD, s"${toDumpPath} all file is correct")
+
               /**
               if (!bool) {
                 MysqlSingleConn.updateStatus(jobType.mysqlStatus, ORC_DUMP_FAILED, successSchema.get(MYSQL_ID).toInt)
@@ -1757,8 +1759,8 @@ class EcAndFileCombine {
         // Coalesce方式也要修改通过静态分区方式
         // 修改分区数
         // 并发执行子分区
-        var syncInsertSize = 1
-        var syncInsertSizeMax = 1
+        var syncInsertSize = 20
+        var syncInsertSizeMax = 20
 
         if (onlyCoalesce || initFileNums == defaultParallelism.toLong) {
           if (!enableFineGrainedInsertion) {
