@@ -34,5 +34,5 @@ select
     pure_product_name,
     match_mode,
     hour,
-    hm,
+    hm
 from vipods_vip.dw_bijia_t_bijia_upload_brand_goods_ds where dt='20220114';
