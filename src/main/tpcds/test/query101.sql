@@ -1,7 +1,7 @@
 --一级分区(insert into)测试,静态分区方式
 drop table if exists vipdmt.query101_test;
 create table if not exists vipdmt.query101_test like vipdmt.container_monitor_impl ;
-insert into table vipdmt.query100_test partition (dt='20220114')
+insert into table vipdmt.query101_test partition (dt='20220114')
 select
 ts,
 pid,
@@ -16,7 +16,7 @@ cpu_usage_pct_total,
 char_read,
 char_write
 from vipdmt.container_monitor_impl where dt='20220114';
-insert into table vipdmt.query100_test partition (dt='20220114')
+insert into table vipdmt.query101_test partition (dt='20220114')
 select
     ts,
     pid,
