@@ -1,6 +1,5 @@
 --测试create as select
 drop table if exists vipdmt.query109_test;
-create table if not exists vipdmt.query109_test like vipdmt.container_monitor_impl ;
 create table vipdmt.query109_test as
 select
     ts,
