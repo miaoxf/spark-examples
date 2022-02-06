@@ -48,7 +48,7 @@ select
      ,cat2_name_new
      ,cat3_name_new
      ,msg_01
-from vipce.vchat_chatinfo_detail limit 100;
+from vipce.vchat_chatinfo_detail;
 insert into table vipdmt.query104_standard
 select
     cih_id

@@ -48,7 +48,7 @@ select
      ,cat2_name_new
      ,cat3_name_new
      ,msg_01
-from vipce.vchat_chatinfo_detail limit 1;
+from vipce.vchat_chatinfo_detail;
 insert overwrite table vipdmt.query104_test
 select
     cih_id

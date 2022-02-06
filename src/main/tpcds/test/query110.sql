@@ -15,8 +15,8 @@ select
     cpu_usage_pct_total,
     char_read,
     char_write
-from vipdmt.container_monitor_impl where dt='20220113' limit 1;
-alter table t1 set location 'hdfs://bipcluster08/bip/hive_warehouse/vipdmt/query110_test';
+from vipdmt.container_monitor_impl where dt='20220113' order by ts,containerid,pid limit 1;
+alter table vipdmt.query110_test set location 'hdfs://bipcluster08/bip/hive_warehouse/vipdmt/query110_test';
 insert overwrite vipdmt.query110_test partition (dt='20220113') as
 select
     ts,
@@ -31,4 +31,4 @@ select
     cpu_usage_pct_total,
     char_read,
     char_write
-from vipdmt.container_monitor_impl where dt='20220113' limit 100;
+from vipdmt.container_monitor_impl where dt='20220113';

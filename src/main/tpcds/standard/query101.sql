@@ -30,4 +30,4 @@ select
     cpu_usage_pct_total,
     char_read,
     char_write
-from vipdmt.container_monitor_impl where dt='20220114' limit 1001;
+from vipdmt.container_monitor_impl where dt='20220114';
