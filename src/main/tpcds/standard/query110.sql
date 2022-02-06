@@ -1,7 +1,7 @@
 --测试customize partition location
 drop table if exists vipdmt.query110_standard;
 create table if not exists vipdmt.query110_standard like vipdmt.container_monitor_impl ;
-insert overwrite vipdmt.query110_standard partition (dt='20220113') as
+insert overwrite vipdmt.query110_standard partition (dt='20220113')
 select
     ts,
     pid,
@@ -17,7 +17,7 @@ select
     char_write
 from vipdmt.container_monitor_impl where dt='20220113' order by ts,containerid,pid limit 1;
 alter table vipdmt.query110_standard set location 'hdfs://bipcluster08/bip/hive_warehouse/vipdmt/query110_standard';
-insert overwrite vipdmt.query110_standard partition (dt='20220113') as
+insert overwrite vipdmt.query110_standard partition (dt='20220113')
 select
     ts,
     pid,
