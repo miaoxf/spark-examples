@@ -1,22 +1,33 @@
---测试小文件合并
-set spark.sql.merge.output.enabled=true
-set spark.sql.global.merge.output.enabled=true
-drop table if exists vipdmt.query107_standard;
-create table if not exists vipdmt.query107_standard like temp_dmt.dm_demeter_action_desc ;
-insert overwrite table vipdmt.query107_standard partition(dt='20220114')
+--测试空数据insert
+drop table if exists vipdmt.query108_standard;
+create table if not exists vipdmt.query108_standard like vipdmt.container_monitor_impl ;
+insert overwrite table vipdmt.query108_standard partition (dt='20220113')
 select
-    action_id
-     ,engine
-     ,priority_level
-     ,progress
-     ,offset_unit
-     ,name
-     ,description
-     ,developer
-     ,frequency
-     ,vipdata_project_id
-     ,vipdata_action_id
-     ,dept_name
-     ,project_name
-from temp_dmt.dm_demeter_action_desc
-where dt='20220114' ;
+    ts,
+    pid,
+    containerid,
+    physical_mem_used,
+    physical_mem_cap,
+    virtual_mem_used,
+    virtual_mem_cap,
+    request_vcore,
+    cpu_useage_pct_per_core,
+    cpu_usage_pct_total,
+    char_read,
+    char_write
+from vipdmt.container_monitor_impl where dt='20220113' ;
+insert overwrite table vipdmt.query108_standard partition (dt='20220114')
+select
+    ts,
+    pid,
+    containerid,
+    physical_mem_used,
+    physical_mem_cap,
+    virtual_mem_used,
+    virtual_mem_cap,
+    request_vcore,
+    cpu_useage_pct_per_core,
+    cpu_usage_pct_total,
+    char_read,
+    char_write
+from vipdmt.container_monitor_impl where dt='20220114' limit 0;
