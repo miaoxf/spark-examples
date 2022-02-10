@@ -1516,23 +1516,17 @@ class EcAndFileCombine {
 
       InnerLogger.debug(InnerLogger.SPARK_MOD, "start to alter table to set location of mid table...")
       // 将该表set location到backup，同时将该表的hdfs路径设置ec policy；如果已经存在，则check一下分区有没有数据
-
       try {
-        spark.sql(showTblLikeMidTblSql).toDF().collect().apply(0)
+        InnerLogger.info(InnerLogger.SPARK_MOD ,s"start create mid table [${createMidTblSql}]")
+        spark.sql(createMidTblSql)
       } catch {
-        case ex: java.lang.ArrayIndexOutOfBoundsException =>
-          // 表不存在，则创建，并设置hdfs_path的ec policy
-          try {
-            InnerLogger.info(InnerLogger.SPARK_MOD ,s"start create mid table [${createMidTblSql}]")
-            spark.sql(createMidTblSql)
-          } catch {
-            case ex: org.apache.spark.sql.catalyst.analysis.NoSuchTableException =>
-              // 原始表不存在，则不需要做ec
-              InnerLogger.error(InnerLogger.SPARK_MOD ,s"source table " +
-                s"[${srcTbl}] may not exist!")
-              throw ex
-          }
+        case ex: org.apache.spark.sql.catalyst.analysis.NoSuchTableException =>
+          // 原始表不存在，则不需要做ec
+          InnerLogger.error(InnerLogger.SPARK_MOD ,s"source table " +
+            s"[${srcTbl}] may not exist!")
+          throw ex
       }
+
       // todo 这边后续改成一个spark-server时，不要每次都alter table级别的location,可以先check一下location是否和预期的Location相同，相同则不alter
       Try { spark.sql(alterTblLocation) } match {
         case Failure(exception) => {

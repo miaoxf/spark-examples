@@ -122,42 +122,23 @@ object OrcFileDumpCheck {
         spark = builder.getOrCreate()
         InnerLogger.info(InnerLogger.SCHE_MOD, "Created Spark session")
 
-        val checkCluster = args(0)
-        val checkSize = if (args.size > 1) args(1).toInt else 2
-
-        MysqlSingleConn.init()
-        val rs = MysqlSingleConn.executeQuery(s"select id,location,file_count from " +
-          s"${checkCluster} where ec_status = 2 and clean_status = 0 limit ${checkSize}")
+        val parPath = args(0)
+        val paral = if (args.size > 1) args(1).toInt else 100
 
         var corFileList = new Array[String](0)
-        var parPath = ""
-        var id: Int = -1
-        var fileCount: Int = 1
-        var paral: Int = 1
 
-        if (rs.next()) {
-            id = rs.getInt(1)
-            parPath = rs.getString(2)
-            fileCount = rs.getInt(3)
-            paral = fileCount/100 + 1
+        corFileList = dumpOrcFileWithSpark(spark, parPath, paral,configuration)
 
-            // update mysql 检测状态 clean_status=1
-//            updateStatus(checkCluster,)
-            corFileList = dumpOrcFileWithSpark(spark, parPath, paral,configuration)
-        }
 
         if (corFileList.length == 0) {
-            // update mysql 成功状态 clean_status=2
-
             InnerLogger.info(InnerLogger.SCHE_MOD, s"${parPath} all file is correct !!!")
         } else {
-            // update mysql 失败状态 clean_status=7
-            // MysqlSingleConn.updateQuery(failedSql)
+
             corFileList.toIterator.foreach(path => {
                 InnerLogger.error(InnerLogger.SCHE_MOD, s"file: ${path} is orc corrupted !!!")
             })
+
         }
 
-        MysqlSingleConn.close()
     }
 }
