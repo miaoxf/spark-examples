@@ -24,7 +24,7 @@ import java.sql.{Connection, DriverManager, ResultSet}
 import java.text.SimpleDateFormat
 import java.util.concurrent.locks.ReentrantLock
 import java.util.stream.Collectors
-import java.util.{Date, Locale, Properties, UUID, stream}
+import java.util.{Calendar, Date, Locale, Properties, UUID, stream}
 import scala.collection.immutable.Range
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
@@ -640,6 +640,13 @@ object EcAndFileCombine {
   def main(args: Array[String]): Unit = {
     // $SPARK_HOME/bin/spark-submit --class org.apache.spark.sql.EcAndFileCombine ./ec-with-dep3.jar
     //initParamsV2(args)
+    val cla = Calendar.getInstance()
+    cla.setTimeInMillis(System.currentTimeMillis())
+    val hour = cla.get(Calendar.HOUR_OF_DAY)
+    if(hour>=22 || hour<=9){
+      println("未在规定的时间内提交(9~21),直接退出")
+      sys.exit(0)
+    }
     initParams(args)
     val executor = new EcAndFileCombine
     if (onlineTestMode) {
