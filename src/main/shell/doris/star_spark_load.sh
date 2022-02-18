@@ -129,7 +129,6 @@ load_one_partition(){
   echo "label: load_${tbl_name}_${currentTS}"
   echo "current-currentTS:$current-$currentTS'"
 
-  #todo 多级分区支持？
   get_partition_location "$db_name.$tbl_name_init" $date_dt
 
   local load_sql="
@@ -160,4 +159,66 @@ get_field "$db_name.$tbl_name" "dt"
 load_one_partition $date_dt $tbl_name
 
 
+add_resource(){
+  # spark_resource_1已经创建
+  local sql='
+      CREATE EXTERNAL RESOURCE "spark_resource_1"
+      PROPERTIES
+      (
+          "type" = "spark",
+          "spark.master" = "yarn",
+          "spark.submit.deployMode" = "client",
+          "spark.hadoop.fs.defaultFS" = "hdfs://bipcluster",
+          "spark.hadoop.dfs.nameservices" = "bipcluster",
+          "spark.hadoop.dfs.ha.namenodes.bipcluster" = "mynamenode1,mynamenode2",
+          "spark.hadoop.dfs.namenode.rpc-address.bipcluster.mynamenode1" = "sd-hadoop-namenode-50-21.idc.vip.com:50070",
+          "spark.hadoop.dfs.namenode.rpc-address.bipcluster.mynamenode2" = "sd-hadoop-namenode-50-22.idc.vip.com:50070",
+          "spark.hadoop.dfs.client.failover.proxy.provider" = "org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider",
+          "spark.hadoop.yarn.resourcemanager.ha.enabled" = "true",
+          "spark.hadoop.yarn.resourcemanager.ha.rm-ids" = "rm1,rm2",
+          "spark.hadoop.yarn.resourcemanager.address.rm1" = "sd-bigdata-apollo-rm-01.idc.vip.com:8040",
+          "spark.hadoop.yarn.resourcemanager.address.rm2" = "sd-bigdata-apollo-rm-02.idc.vip.com:8040",
+          "working_dir" = "hdfs://bipcluster/tmp/starrocks",
+          "broker" = "hdfs_broker",
+          "broker.username" = "hdfs",
+          "broker.password" = "hdfs",
+          "broker.dfs.nameservices" = "bipcluster",
+          "broker.dfs.ha.namenodes.bipcluster" = "mynamenode1,mynamenode2",
+          "broker.dfs.namenode.rpc-address.bipcluster.mynamenode1" = "sd-hadoop-namenode-50-21.idc.vip.com:50070",
+          "broker.dfs.namenode.rpc-address.bipcluster.mynamenode2" = "sd-hadoop-namenode-50-22.idc.vip.com:50070",
+          "broker.dfs.client.failover.proxy.provider" = "org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider"
+      );
+      GRANT USAGE_PRIV ON RESOURCE "spark_resource_1" TO "hdfs"@"%";
+      '
+  local drop_resource_sql='
+    DROP RESOURCE "spark_resource_1";
+  '
+  mysql -hgd16-bigdata-apollo-nm-150-181-22.idc.vip.com -P19030 -uroot -e "$sql"
+}
 
+load_sql_demo(){
+  local sql="
+    use hive_vipvpe;
+    LOAD LABEL hive_vipvpe.st_price_tag_once_detail_preload_test_by_xuefei_3
+    (
+        DATA INFILE("hdfs://bipcluster03/bip/hive_warehouse/hive_vipvpe.db/st_price_tag_once_detail_preload")
+        INTO TABLE st_price_tag_once_detail_test_by_xuefei
+        COLUMNS TERMINATED BY ","
+        (v_sku_id,barcode,sn,brand_store_sn,tag_price,update_time,is_haitao,expire_time,is_mp,brand_id,goods_id,spu_id,goods_code,history_dept_name,cur_dept_name,standard_prod_attr,brand_store_name,brand_level,brand_type,goods_name,new_category_3rd_name,goods_level,hot_sales_type,vipshop_price,market_price,benchmark_price,price_effective_time,approval_promo_id,approval_promo_name,approval_plan_type,product_sell_from,price_ratio,product_sell_age,kq_top_n,single_promo,discount_promo,coupon_promo,first_dep_of_owner_id,first_dep_of_owner,sec_dep_of_owner_id,sec_dep_of_owner,vendor_code_list,store_id,prod_spu_id,prod_sku_id,mer_item_no,ptp_tag_ids,his_price_goods_id,price_tag)
+    )
+    WITH RESOURCE 'spark_resource_1'
+    (
+        "spark.executor.memory" = "8g",
+        "spark.shuffle.compress" = "true"
+    )
+    PROPERTIES
+    (
+        "timeout" = "3600"
+    );
+  "
+
+  local show_load="
+    show load from hive_vipvpe where label='st_price_tag_once_detail_preload_test_by_xuefei_3'
+    order by CreateTime desc limit 1;
+  "
+}
