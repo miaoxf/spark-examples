@@ -421,37 +421,6 @@ object EcAndFileCombine {
       record.maxPartitionBytes = record.largestFileSize.toLong
   }
 
-  /** 计算record的分区级数 */
-  def computeNumOfPartitions(record: Record) = {
-    import java.io.{File, FileOutputStream}
-    s"mkdir -p ${tmpParentPath}".!
-    val tmpFileName = tmpParentPath + "numOfPartitionLevel_" + record.jobId + ".sh"
-    val numOfPartitionLevelCmd =
-      s"""hive -e "set hive.compute.query.using.stats=false;
-         |         set mapreduce.job.queuename=${yarnQueue};
-         |show partitions ${record.dbName}.${record.tblName}" | head -n 1 | awk '{s+=gsub(/=/,"&")}END{print s}'
-         |""".stripMargin
-
-    //todo 如果文件存在？
-    // todo 统一规范到/tmp/ec目录下
-    val cmd0 = s"touch ${tmpFileName}"
-    val cmd1 = s"chmod 777 ${tmpFileName}"
-    runCmd(cmd0, Some(record), "computeMaxSizeOfSingleFile")
-    val file = new File(tmpFileName)
-    new FileOutputStream(file).write(numOfPartitionLevelCmd.getBytes(defaultCharset))
-    runCmd(cmd1, Some(record), "computeMaxSizeOfSingleFile")
-    InnerLogger.debug(InnerLogger.ENCAP_MOD, "start to get partition nums...")
-    //    val p = Runtime.getRuntime.exec(s"sh ${tmpFileName}")
-    //    var numOfPartitionLevel = ""
-    //    val reader = new BufferedReader(new InputStreamReader(p.getInputStream))
-    //    numOfPartitionLevel = reader.lines().findFirst().get()
-    val numOfPartitionLevel = s"sh ${tmpFileName}".!!.stripSuffix("\n").stripMargin
-    assert(numOfPartitionLevel.toInt >= 0, "numOfPartitionLevel<0 or numOfPartitionLevel" +
-      "can not be converted to int!")
-    InnerLogger.info(InnerLogger.ENCAP_MOD, s"numOfPartitionLevel: ${numOfPartitionLevel}")
-    record.numOfPartitionLevel = numOfPartitionLevel
-  }
-
   def computeMaxSizeOfSingleFile(record: Record) = {
     // 计算有几级分区
     InnerLogger.debug(InnerLogger.ENCAP_MOD, "start to computeMaxSizeOfSingleFile...")
@@ -775,9 +744,9 @@ class EcAndFileCombine {
         return
       }
 
-      computeNumOfPartitions(record)
+      // we do not compute this partition level anymore, but get it from datasource
+      // computeNumOfPartitions(record)
       // 如果numOfPartitionLevel>1，那么有多级分区，采用动态分区写入数据
-      MysqlSingleConn.updateStatus(jobType.numPartitions, record.numOfPartitionLevel.toInt, record.getId)
       if (onlyHandleOneLevelPartition && record.numOfPartitionLevel.toInt > 1) {
         MysqlSingleConn.updateStatus(jobType.mysqlStatus, 0, record.getId)
         return
@@ -1175,7 +1144,7 @@ class EcAndFileCombine {
     // 对应开启分流的同时，没有指定需要分流的表，那么，根据split_flow_status = 1来寻找分流的表
     val getDatasourceSql =
     s"""
-       |select id,db_name,tbl_name,location,first_partition,${jobType.mysqlStatus},path_cluster,dt,file_size
+       |select id,db_name,tbl_name,location,first_partition,${jobType.mysqlStatus},path_cluster,dt,file_size,num_partitions
        |    from ${targetMysqlTable} where ${if (!onlineTestMode) jobType.mysqlStatus + " = 1 and " else " "} id in (${ids})
        |    ${if (targetTableToEcOrCombine != null && targetTableToEcOrCombine != "") " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
        |""".stripMargin
@@ -1191,6 +1160,7 @@ class EcAndFileCombine {
       record.cluster = rs.getString("path_cluster")
       record.dt = rs.getString("dt")
       record.totalFileSize = rs.getLong("file_size")
+      record.numOfPartitionLevel = rs.getString("num_partitions")
       record.enableSplitFlow = enableGobalSplitFlow
 
       // 分流相关
@@ -1462,6 +1432,7 @@ class EcAndFileCombine {
       val dbName = schemaMap.get(DB_NAME)
       val defaultParallelism = schemaMap.get(COMPUTED_PARALLELISM)
       val maxPartitionBytes = schemaMap.get(MAX_PARTITION_BYTES)
+      val num_part_level = schemaMap.get(NUM_OF_PARTITION_LEVEL).toInt
 
       val firstPartition = schemaMap.get(FIRST_PARTITION)
       val kv = firstPartition.split("=")
@@ -1560,6 +1531,7 @@ class EcAndFileCombine {
         showPartitionOfSrcTblSql = showPartitionOfSrcTblSql.replace("${partitionSql}", partitionPredicate)
         showPartitionsRows = spark.sql(showPartitionOfSrcTblSql).collect()
         partitionStr = showPartitionsRows.apply(0).get(0).toString
+
         getPartitionsInInsertSql(getPartitionSql(partitionStr, fieldOfStaticPartition), partitionPredicate)
       } catch {
         case ex: Exception =>
@@ -1577,6 +1549,12 @@ class EcAndFileCombine {
               throw ex
           }
       }
+
+      val realPartSize = partitionStr.split("/").size
+      InnerLogger.debug(InnerLogger.SPARK_MOD, s"表[${srcTbl}]的实际分区级数[${realPartSize}]," +
+        s"数据源中获取的分区级数[${num_part_level}]")
+      assert(realPartSize == num_part_level, s"实际分区级数[${realPartSize}]必须与" +
+        s"数据源中的分区级数[${num_part_level}]相同！")
 
       insertSql = insertSql.replace("${partitionSql}", parSql)
       // 这边是否需要set location? 不需要且不能: 多级分区时，这边无法alter，因为新创建的表还没有partition.
