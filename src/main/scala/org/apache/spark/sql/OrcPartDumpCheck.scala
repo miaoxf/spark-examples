@@ -6,11 +6,12 @@ import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch
 import org.apache.orc.{OrcFile, Reader, RecordReader}
 import org.apache.spark.sql.MysqlSingleConn.getConnection
 import org.apache.spark.util.SerializableConfiguration
-import org.apache.spark.SparkConf
+import org.apache.spark.{SparkConf, SparkContext}
 
+import java.io.{BufferedInputStream, File, FileInputStream}
 import scala.collection.mutable.ArrayBuffer
 
-object OrcFileDumpCheck {
+object OrcPartDumpCheck {
 
     // 获取子分区下的所有文件
     def getAllFilesInPath(parentPath: Path, configuration: Configuration, buffer: ArrayBuffer[Path]): Unit = {
@@ -38,7 +39,6 @@ object OrcFileDumpCheck {
 
         getAllFilesInPath(path, configuration, fileInPath)
         val allFiles = fileInPath.map(_.toString)
-
         val rdd = spark.sparkContext.makeRDD(allFiles, parallelism)
         val broadcastedHadoopConf = spark.sparkContext.broadcast(new SerializableConfiguration(configuration))
 
@@ -50,21 +50,26 @@ object OrcFileDumpCheck {
                     val hdfsConf = broadcastedHadoopConf.value.value
                     // 通过初始化RecordReader检测orc文件是否损坏
                     val path = new Path(pathStr)
-
-                    // InnerLogger.debug(InnerLogger.CHECK_MOD, s"start check file : ${pathStr} ")
-                    var batchCount = 0
-                    var rowCount = 0
-                    val reader: Reader = OrcFile.createReader(path, OrcFile.readerOptions(hdfsConf))
-                    val records: RecordReader = reader.rows()
-                    val batch: VectorizedRowBatch = reader.getSchema().createRowBatch()
-                    while (records.nextBatch(batch)) {
-                        batchCount += 1
-                        rowCount += batch.size
+                    try {
+                        // InnerLogger.debug(InnerLogger.CHECK_MOD, s"start check file : ${pathStr} ")
+                        var batchCount = 0
+                        var rowCount = 0
+                        val reader: Reader = OrcFile.createReader(path, OrcFile.readerOptions(hdfsConf))
+                        val records: RecordReader = reader.rows()
+                        val batch: VectorizedRowBatch = reader.getSchema().createRowBatch()
+                        while (records.nextBatch(batch)) {
+                            batchCount += 1
+                            rowCount += batch.size
+                        }
+                        records.close()
+                        reader.close()
+                        // InnerLogger.debug(InnerLogger.CHECK_MOD, s"end check file : ${pathStr} is ok!")
+                    } catch {
+                        case ex: Exception => {
+                            fileCorruptList += pathStr
+                            InnerLogger.error(InnerLogger.CHECK_MOD, s"end check file : ${pathStr} is corrupted!")
+                        }
                     }
-                    records.close()
-                    reader.close()
-                    // InnerLogger.debug(InnerLogger.CHECK_MOD, s"batchCount : ${pathStr} , rowCount : ${rowCount}")
-                    // InnerLogger.debug(InnerLogger.CHECK_MOD, s"end check file : ${pathStr} is ok!")
                 }
             })
             fileCorruptList.toIterator
@@ -73,16 +78,30 @@ object OrcFileDumpCheck {
         dumpRetRdd.collect()
     }
 
-    def updateStatus(checkCluster: String,status: String, value: Any, recordId: Int): Int = {
+    def updateInitStatus(checkCluster: String,id: Long,status: Int,action_id: Long,action_sid: Long): Int = {
 
         val statement = getConnection.createStatement()
         val sql =
             s"""
-               |update ${checkCluster} set ${status} = ${value.toString}
-               |  where id = ${recordId}
+               |update ${checkCluster} set check_status=${status},
+               |action_id=${action_id},action_sid=${action_sid}
+               |where id=${id}
                |""".stripMargin
 
-        InnerLogger.debug("update-mysql", s"execute sql ${sql}")
+        InnerLogger.debug("update-init-mysql", s"execute sql ${sql}")
+        statement.executeUpdate(sql)
+    }
+
+    def updateLastStatus(checkCluster: String,id: Long,status: Int,corruptedcount: Int): Int = {
+
+        val statement = getConnection.createStatement()
+        val sql =
+            s"""
+               |update ${checkCluster} set check_status=${status},corrupted_count=${corruptedcount}
+               |where id=${id}
+               |""".stripMargin
+
+        InnerLogger.debug("update-last-mysql", s"execute sql ${sql}")
         statement.executeUpdate(sql)
     }
 
@@ -105,12 +124,16 @@ object OrcFileDumpCheck {
 
     def main(args: Array[String]): Unit = {
 
-        var configuration: Configuration = getHadoopConfInShell
+        val action_id = args(0).toLong
+        val action_sid = args(1).toLong
+        val checkCluster = args(2)
+        val paral = if (args.size > 3) args(3).toInt else 500
+        var location = ""
+        var id = 0
+        var corFileList = new Array[String](0)
 
+        val configuration: Configuration = getHadoopConfInShell
         val conf = new SparkConf()
-
-        //        conf.set("spark.master", "local[1]")
-        //          .setAppName("OrcFileDumpTest")
         conf.set("spark.master", "yarn")
           .set("spark.submit.deployMode", "client")
           .setAppName("OrcFileDumpCheck")
@@ -121,23 +144,36 @@ object OrcFileDumpCheck {
         spark = builder.getOrCreate()
         InnerLogger.info(InnerLogger.SCHE_MOD, "Created Spark session")
 
-        val parPath = args(0)
-        val paral = if (args.size > 1) args(1).toInt else 100
+        val getDataSourceSql =
+            s"""
+               |select id,db_name,tbl_name,location from ${checkCluster}
+               |    where check_status=0 order by priority desc limit 1
+               |""".stripMargin
 
-        var corFileList = new Array[String](0)
+        InnerLogger.debug(InnerLogger.ENCAP_MOD, s"sql to get datasource: ${getDataSourceSql}")
+        MysqlSingleConn.init()
+        val rs = MysqlSingleConn.executeQuery(getDataSourceSql)
+        while (rs.next()) {
+            id = rs.getInt("id")
+            location = rs.getString("location")
+        }
+        updateInitStatus(checkCluster, id, 1, action_id, action_sid)
 
-        corFileList = dumpOrcFileWithSpark(spark, parPath, paral,configuration)
-
+        corFileList = dumpOrcFileWithSpark(spark, location, paral, configuration)
 
         if (corFileList.length == 0) {
-            InnerLogger.info(InnerLogger.SCHE_MOD, s"${parPath} all file is correct !!!")
+            // update mysql 成功状态 check_status=2
+            updateLastStatus(checkCluster, id, 2, 0)
+            InnerLogger.info(InnerLogger.SCHE_MOD, s"${location} all file is correct !!!")
         } else {
-
+            // update mysql 失败状态 check_status=5
+            updateLastStatus(checkCluster, id, 5, corFileList.length)
             corFileList.toIterator.foreach(path => {
                 InnerLogger.error(InnerLogger.SCHE_MOD, s"file: ${path} is orc corrupted !!!")
             })
-
         }
+
+        MysqlSingleConn.close()
 
     }
 }

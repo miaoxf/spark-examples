@@ -10,7 +10,7 @@ package org.apache.spark.sql
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.SparkException
-import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
+import org.apache.spark.sql.EcAndFileCombine.{batchSize, defaultHadoopConfDir, enableStrictCompression, hadoopConfDir, jobType, onlineTestMode, runCmd, targetMysqlTable}
 import org.apache.spark.sql.InnerUtils.configuration
 import org.apache.spark.sql.JobType.{DB_NAME, JobType, MID_DT_LOCATION, MID_TBL_NAME, Record}
 import org.apache.spark.sql.MysqlSingleConn.{CMD_EXECUTE_FAILED, DATA_IN_DEST_DIR, INIT_CODE, ORC_DUMP_FAILED, PROCESS_KILLED, SKIP_WORK, SOURCE_IN_SOURCE_DIR, SOURCE_IN_TEMPORARY_DIR, START_SPLIT_FLOW, SUCCESS_CODE, SUCCESS_FILE_MISSING, defaultMySQLConfig}
@@ -24,7 +24,7 @@ import java.sql.{Connection, DriverManager, ResultSet}
 import java.text.SimpleDateFormat
 import java.util.concurrent.locks.ReentrantLock
 import java.util.stream.Collectors
-import java.util.{Date, Locale, Properties, UUID, stream}
+import java.util.{Calendar, Date, Locale, Properties, UUID, stream}
 import scala.collection.immutable.Range
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
@@ -642,6 +642,13 @@ object EcAndFileCombine {
   def main(args: Array[String]): Unit = {
     // $SPARK_HOME/bin/spark-submit --class org.apache.spark.sql.EcAndFileCombine ./ec-with-dep3.jar
     //initParamsV2(args)
+    val cla = Calendar.getInstance()
+    cla.setTimeInMillis(System.currentTimeMillis())
+    val hour = cla.get(Calendar.HOUR_OF_DAY)
+    if(hour>=22 || hour<=9){
+      println("未在规定的时间内提交(9~21),直接退出")
+      sys.exit(0)
+    }
     initParams(args)
     val executor = new EcAndFileCombine
     if (onlineTestMode) {
@@ -861,8 +868,8 @@ class EcAndFileCombine {
           val inputFormat = successSchema.get(INPUT_FORMAT)
           val outputFormat = successSchema.get(OUTPUT_FORMAT)
           val totalFileCount = successSchema.get(COMBINED_FILE_NUMS).toLong
-          val orcCheckPara = (totalFileCount/100).toInt + 1
-          if (!enableGobalSplitFlow && ORC_INPUT_FORMAT.equalsIgnoreCase(inputFormat)
+          val orcCheckPara = (totalFileCount/10).toInt + 1
+          if (ORC_INPUT_FORMAT.equalsIgnoreCase(inputFormat)
             && ORC_OUTPUT_FORMAT.equalsIgnoreCase(outputFormat)) {
             // execute orc file dump
             InnerLogger.debug(InnerLogger.CHECK_MOD, s"this is an ec job,start to dump orc file[${successSchema.get(MID_DT_LOCATION)}]...")
@@ -870,17 +877,19 @@ class EcAndFileCombine {
             val toDumpPath = successSchema.get(MID_DT_LOCATION)
             if (enableOrcDumpWithSpark) {
               // val bool = dumpOrcFileWithSpark(spark, toDumpPath)
-              val corFileList = dumpOrcFileWithSpark(spark, toDumpPath, orcCheckPara, configuration)
-              if (corFileList.length == 0) {
-                InnerLogger.info(InnerLogger.SCHE_MOD, s"${toDumpPath} all file is correct")
-              } else {
-                MysqlSingleConn.updateStatus(jobType.mysqlStatus, ORC_DUMP_FAILED, successSchema.get(MYSQL_ID).toInt)
-                InnerLogger.error(InnerLogger.CHECK_MOD, s"dump orc file[${toDumpPath}] failed!")
-                corFileList.toIterator.foreach(path => {
-                  InnerLogger.error(InnerLogger.SCHE_MOD, s"file: ${path} is orc corrupted")
-                })
-                throw new RuntimeException(s"dump orc file failed!")
+              try {
+                dumpOrcFileWithSpark(spark, toDumpPath, orcCheckPara, configuration)
+              } catch {
+                case ex: Exception => {
+                  val msg = if (ex.getCause == null) ex.getMessage + "\n" + ex.getClass + "\n" + ex.getStackTrace.mkString("\n")
+                  else ex.getMessage + "\n" + ex.getClass + "\n" + ex.getStackTrace.mkString("\n") + "\n" + ex.getCause.toString
+                  InnerLogger.error(InnerLogger.CHECK_MOD, s"dump orc file[${toDumpPath}] failed! corrupted reason:\n${msg}")
+                  MysqlSingleConn.updateStatus(jobType.mysqlStatus, ORC_DUMP_FAILED, successSchema.get(MYSQL_ID).toInt)
+                  throw new RuntimeException(s"dump orc file failed!")
+                }
               }
+              InnerLogger.info(InnerLogger.SCHE_MOD, s"${toDumpPath} all file is correct")
+
               /**
               if (!bool) {
                 MysqlSingleConn.updateStatus(jobType.mysqlStatus, ORC_DUMP_FAILED, successSchema.get(MYSQL_ID).toInt)
@@ -894,6 +903,50 @@ class EcAndFileCombine {
             }
             InnerLogger.info(InnerLogger.CHECK_MOD, s"dump orc file[${successSchema.get(MID_DT_LOCATION)}] successfully!")
           }
+          // fix 分区location与源location不一致
+          val srctbl = successSchema.get(DB_NAME) + "." + successSchema.get(TBL_NAME)
+          var firstPart = successSchema.get(FIRST_PARTITION)
+          val firstPartArr = firstPart.split("=")
+          assert(firstPartArr.size == 2)
+          firstPart = firstPartArr(0) + "='" + firstPartArr(1) + "'"
+          val firstLocation = successSchema.get(LOCATION)
+          var finePart = ""
+          val showPartitionOfSrcTblSql = s"show partitions ${srctbl} partition (${firstPart})"
+          InnerLogger.debug(InnerLogger.ENCAP_MOD, s"execute : ${showPartitionOfSrcTblSql} get FinePartition")
+          val showPartitions = spark.sql(showPartitionOfSrcTblSql).collect()
+          var onePartition = ""
+          val descTempView = "descTempView"
+          val tblLocation = successSchema.get(SOURCE_TBL_LOCATION)
+          // partitionStr = showPartitionsRows.apply(0).get(0).toString
+          // dt=20211201/hm=0000
+          showPartitions.map(partition => {
+            onePartition = partition.get(0).toString
+            val onePartitions = onePartition.split("/")
+            var buffer = new ArrayBuffer[String]()
+            for (i <- Range(0,onePartitions.size)) {
+              var part = onePartitions(i)
+              var kv = part.split("=")
+              assert(kv.size == 2)
+              buffer += kv(0) + "=" + "'" + kv(1) + "'"
+            }
+            finePart = buffer.mkString(",")
+            var descPartitionOfSrcTblSql = s"desc formatted ${srctbl} partition(${finePart})"
+            InnerLogger.debug(InnerLogger.ENCAP_MOD, s"execute : ${descPartitionOfSrcTblSql} get FinePartitionLocation")
+            val descDf = spark.sql(descPartitionOfSrcTblSql)
+            descDf.createOrReplaceTempView(descTempView)
+            InnerLogger.debug(InnerLogger.ENCAP_MOD, s"execute : [select data_type from ${descTempView} where col_name='Location'] get showLocation")
+            val showLocation = spark.sql(s"select data_type from ${descTempView} " +
+              "where col_name='Location'").collect().apply(0).get(0).toString
+            val sourceLocation = tblLocation + onePartition
+            if (!sourceLocation.equals(showLocation)) {
+              // 分区location与源location不一致
+              InnerLogger.warn(InnerLogger.ENCAP_MOD, s"source目录[${sourceLocation}]与分区目录[${showLocation}]不一致，跳过该作业!")
+              MysqlSingleConn.updateStatus(jobType.mysqlStatus, SKIP_WORK, successSchema.get(MYSQL_ID).toInt)
+              throw new RuntimeException(s"sourceLocation is different showLocation")
+            }
+            partition
+          })
+
         case JobType.fileCombine =>
           InnerLogger.debug(InnerLogger.CHECK_MOD, "this is a fileCombine job...")
       }
@@ -1068,8 +1121,7 @@ class EcAndFileCombine {
        |    where ${jobType.mysqlStatus} = 0
        |    ${if (onlyHandleOneLevelPartition) "and " + jobType.numPartitions + " <= 1" else " "}
        |    ${if (targetTableToEcOrCombine != null && targetTableToEcOrCombine != "") " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
-       |    ${if (enableFileCountOrder && enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "}
-       |    ${if (enableFileCountOrder) "order by split_flow_status " else " "}
+       |    ${if (enableFileCountOrder) "order by file_count_old desc " else " "}
        |    ${if (!enableFileCountOrder && enableFileSizeOrder) "order by file_size " + handleFileSizeOrder else " "}
        |    limit ${targetBatchSize}) t
        |""".stripMargin
@@ -1126,7 +1178,6 @@ class EcAndFileCombine {
        |select id,db_name,tbl_name,location,first_partition,${jobType.mysqlStatus},path_cluster,dt,file_size
        |    from ${targetMysqlTable} where ${if (!onlineTestMode) jobType.mysqlStatus + " = 1 and " else " "} id in (${ids})
        |    ${if (targetTableToEcOrCombine != null && targetTableToEcOrCombine != "") " and concat(db_name, '.', tbl_name) in (" + getTable + ")" else " "}
-       |    ${if (enableFileCountOrder && enableGobalSplitFlow && targetTableToEcOrCombine.equals("")) s" and (split_flow_status = ${splitFlowLevel} or (split_flow_status <0 and split_flow_status>-5) ) " else " "};
        |""".stripMargin
     InnerLogger.debug(InnerLogger.ENCAP_MOD, s"sql to get datasource: ${getDatasourceSql}")
     val rs = MysqlSingleConn.executeQuery(getDatasourceSql)
@@ -1434,7 +1485,7 @@ class EcAndFileCombine {
       val createMidTblSql = "create table IF NOT EXISTS " + dbName + "." + midTblName + " like " + srcTbl + " LOCATION '" + midTblLocation + "' "
       val alterTblLocation = "alter table " + dbName + "." + midTblName + " set LOCATION  '" +midTblLocation + "' "
       val dropFirstPartitionLocation = "alter table " + dbName + "." + midTblName + " drop partition (" + firstPartition + ")"
-      val showPartitionOfSrcTblSql = "show partitions " + srcTbl
+      var showPartitionOfSrcTblSql = "show partitions " + srcTbl + " partition (${partitionSql}) "
       // val partitionsInInsertSql = getPartitionsInInsertSql(getPartitionSql(partitionStr, fieldOfStaticPartition), partitionPredicate)
       val showCreateSrcTblSql = s"show create table " + srcTbl
       val descFormattedSrcSql = "desc formatted " + srcTbl
@@ -1463,23 +1514,17 @@ class EcAndFileCombine {
 
       InnerLogger.debug(InnerLogger.SPARK_MOD, "start to alter table to set location of mid table...")
       // 将该表set location到backup，同时将该表的hdfs路径设置ec policy；如果已经存在，则check一下分区有没有数据
-
       try {
-        spark.sql(showTblLikeMidTblSql).toDF().collect().apply(0)
+        InnerLogger.info(InnerLogger.SPARK_MOD ,s"start create mid table [${createMidTblSql}]")
+        spark.sql(createMidTblSql)
       } catch {
-        case ex: java.lang.ArrayIndexOutOfBoundsException =>
-          // 表不存在，则创建，并设置hdfs_path的ec policy
-          try {
-            InnerLogger.info(InnerLogger.SPARK_MOD ,s"start create mid table [${createMidTblSql}]")
-            spark.sql(createMidTblSql)
-          } catch {
-            case ex: org.apache.spark.sql.catalyst.analysis.NoSuchTableException =>
-              // 原始表不存在，则不需要做ec
-              InnerLogger.error(InnerLogger.SPARK_MOD ,s"source table " +
-                s"[${srcTbl}] may not exist!")
-              throw ex
-          }
+        case ex: org.apache.spark.sql.catalyst.analysis.NoSuchTableException =>
+          // 原始表不存在，则不需要做ec
+          InnerLogger.error(InnerLogger.SPARK_MOD ,s"source table " +
+            s"[${srcTbl}] may not exist!")
+          throw ex
       }
+
       // todo 这边后续改成一个spark-server时，不要每次都alter table级别的location,可以先check一下location是否和预期的Location相同，相同则不alter
       Try { spark.sql(alterTblLocation) } match {
         case Failure(exception) => {
@@ -1512,6 +1557,7 @@ class EcAndFileCombine {
       var partitionStr: String = ""
       var showPartitionsRows: Array[Row] = null
       val parSql = try {
+        showPartitionOfSrcTblSql = showPartitionOfSrcTblSql.replace("${partitionSql}", partitionPredicate)
         showPartitionsRows = spark.sql(showPartitionOfSrcTblSql).collect()
         partitionStr = showPartitionsRows.apply(0).get(0).toString
         getPartitionsInInsertSql(getPartitionSql(partitionStr, fieldOfStaticPartition), partitionPredicate)
@@ -1676,14 +1722,20 @@ class EcAndFileCombine {
             s"parallelism:${parallelism}")
           if (parallelism > 0) {
             if (isShuffle) {
-              parallelism = Math.ceil(totalSize.toLong / maxPartitionBytes.toLong).toLong
-              val stripeSize =
-                if (maxPartitionBytes.toLong * 3 < 1073741824L) 1073741824L
-                else maxPartitionBytes.toLong * 3
-              spark.conf.set("orc.stripe.size", stripeSize.toString)
-              fineInsertSql = s"insert overwrite table " + dbName + "." + midTblName +
-                s" partition (${location2Sql._3}) " +
-                s"select /*+ ${repartitionOrCoalesce(parallelism.toString, fineViewName)} */ * from " + fineViewName
+              if (enableStrictCompression) {
+                parallelism = Math.ceil(totalSize.toLong / maxPartitionBytes.toLong).toLong
+                val stripeSize =
+                  if (maxPartitionBytes.toLong * 3 < 1073741824L) 1073741824L
+                  else maxPartitionBytes.toLong * 3
+                spark.conf.set("orc.stripe.size", stripeSize.toString)
+                fineInsertSql = s"insert overwrite table " + dbName + "." + midTblName +
+                  s" partition (${location2Sql._3}) " +
+                  s"select /*+ ${repartitionOrCoalesce(parallelism.toString, fineViewName)} */ * from " + fineViewName
+              } else {
+                fineInsertSql = s"insert overwrite table " + dbName + "." + midTblName +
+                  s" partition (${location2Sql._3}) " +
+                  s"select /*+ repartition(${parallelism}${repartitionIntervene(fineViewName)}) */ * from " + fineViewName
+              }
             } else {
               fineInsertSql = s"insert overwrite table " + dbName + "." + midTblName +
                 s" partition (${location2Sql._3}) " +
@@ -1732,15 +1784,21 @@ class EcAndFileCombine {
         // Coalesce方式也要修改通过静态分区方式
         // 修改分区数
         // 并发执行子分区
-        var syncInsertSize = 1
-        var syncInsertSizeMax = 1
+        var syncInsertSize = 20
+        var syncInsertSizeMax = 20
 
-        if (!enableStrictCompression && (onlyCoalesce || initFileNums == defaultParallelism.toLong)) {
-          val insertPool: ThreadPoolExecutor = new ThreadPoolExecutor(syncInsertSize,syncInsertSizeMax,
-            10000L, TimeUnit.MILLISECONDS,new LinkedBlockingQueue[Runnable])
-          // 特定场景下可以改为coalesce，避免shuffle。
-          scheduleFineGrainedJob(locationToStaticPartitionSql, insertPool, false)
-        } else if (enableStrictCompression || (enableFineGrainedInsertion && allStaticPartition)) {
+        if (onlyCoalesce || initFileNums == defaultParallelism.toLong) {
+          if (!enableFineGrainedInsertion) {
+            insertSql = insertSql.replace("repartition", "coalesce")
+            InnerLogger.info(InnerLogger.SPARK_MOD, s"start to execute insertion with coalesce: spark.sql(${insertSql})")
+            spark.sql(insertSql)
+          } else {
+            val insertPool: ThreadPoolExecutor = new ThreadPoolExecutor(syncInsertSize,syncInsertSizeMax,
+              10000L, TimeUnit.MILLISECONDS,new LinkedBlockingQueue[Runnable])
+            // 特定场景下可以改为coalesce，避免shuffle。
+            scheduleFineGrainedJob(locationToStaticPartitionSql, insertPool, false)
+          }
+        } else if (enableFineGrainedInsertion && allStaticPartition) {
           // 可以找到所有的静态分区，按照最细粒度合并
           // 动态分区仍然开启，通过动态分区的方式insert，但是overwrite模式改成动态的!
           // 改repartition注意共享变量
